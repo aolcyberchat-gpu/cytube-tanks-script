@@ -8,6 +8,8 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write       # <-- Allows workflow to push changes back to repo
 
     steps:
     - name: Checkout repo
@@ -28,4 +30,3 @@ jobs:
           git push
         else
           echo "No changes detected; skipping commit."
-        fi
