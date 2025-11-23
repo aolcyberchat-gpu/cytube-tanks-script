@@ -1,17 +1,32 @@
-name: Purge JSDelivr Cache
+name: Sync Pastebin to GitHub
 
 on:
-  push:
-    paths:
-      - "pastebin-version.js"
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
 
 jobs:
-  purge:
+  sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
-      - name: Purge JSDelivr
-        run: |
-          echo "Purging JSDelivr cache..."
-          curl -X GET "https://purge.jsdelivr.net/gh/aolcyberchat-gpu/cytube-tanks-script@main/pastebin-version.js"
-          echo "Purge request sent."
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Pastebin content
+        run: curl -L "https://pastebin.com/raw/DedQR7ix" -o pastebin-version.js
+
+      - name: Commit and push if updated
+        shell: bash
+        run: >
+          git config user.name "github-actions[bot]" &&
+          git config user.email "github-actions[bot]@users.noreply.github.com" &&
+          if ! git diff --quiet pastebin-version.js; then
+            git add pastebin-version.js &&
+            git commit -m "Auto-update from Pastebin" &&
+            git push;
+          else
+            echo "No changes detected; skipping commit";
+          fi
