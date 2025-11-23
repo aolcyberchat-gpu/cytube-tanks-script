@@ -3,30 +3,30 @@ name: Sync Pastebin to GitHub
 on:
   schedule:
     - cron: "*/5 * * * *"   # Every 5 minutes
-  workflow_dispatch:        # Allows manual "Run workflow" button
+  workflow_dispatch:        # Allows manual trigger
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     permissions:
-      contents: write       # <-- Allows workflow to push changes back to repo
+      contents: write       # Allows pushing changes
 
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Download Pastebin content
-      run: |
-        curl -L "https://pastebin.com/raw/DedQR7ix" -o pastebin-version.js
+      - name: Download Pastebin content
+        run: |
+          curl -L "https://pastebin.com/raw/DedQR7ix" -o pastebin-version.js
 
-    - name: Commit changes if updated
-      run: |
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        
-        if ! git diff --quiet pastebin-version.js; then
-          git add pastebin-version.js
-          git commit -m "Auto-update from Pastebin"
-          git push
-        else
-          echo "No changes detected; skipping commit"
+      - name: Commit and push if updated
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if ! git diff --quiet pastebin-version.js; then
+            git add pastebin-version.js
+            git commit -m "Auto-update from Pastebin"
+            git push
+          else
+            echo "No changes detected; skipping commit"
