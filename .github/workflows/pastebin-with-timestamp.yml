@@ -1,1 +1,31 @@
+name: Pastebin With Timestamp
 
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "*/5 * * * *"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch Pastebin
+        run: |
+          curl -fsSL https://pastebin.com/raw/DedQR7ix -o paste-original.js
+
+      - name: Add Timestamp and Build New File
+        run: |
+          TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "// build: $TS" > pastebin-with-timestamp.js
+          cat paste-original.js >> pastebin-with-timestamp.js
+
+      - name: Commit New File
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add pastebin-with-timestamp.js
+          git commit -m "Update pastebin-with-timestamp.js"
+          git push
