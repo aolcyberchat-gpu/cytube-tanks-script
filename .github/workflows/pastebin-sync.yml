@@ -29,5 +29,3 @@ jobs:
             git push
           else
             echo "No changes detected; skipping commit"
-            # newline here?
-            # or newline here?
