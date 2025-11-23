@@ -1,0 +1,18 @@
+name: Purge jsDelivr Cache
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "pastebin-version.js"
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Purge jsDelivr
+        shell: bash
+        run: >
+          curl -I "https://purge.jsdelivr.net/gh/aolcyberchat-gpu/cytube-tanks-script@main/pastebin-version.js" &&
+          echo "jsDelivr cache purge requested."
