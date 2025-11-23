@@ -2,7 +2,8 @@ name: Sync Pastebin to GitHub
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    # Every Monday at 03:00 UTC
+    - cron: "0 3 * * 1"
   workflow_dispatch:
 
 jobs:
@@ -19,16 +20,8 @@ jobs:
         run: curl -L "https://pastebin.com/raw/DedQR7ix" -o pastebin-version.js
 
       - name: Commit and push if updated
-        run: >
-          git config user.name "github-actions[bot]" &&
-          git config user.email "github-actions[bot]@users.noreply.github.com" &&
-          if ! git diff --quiet pastebin-version.js; then
-            git add pastebin-version.js;
-            git commit -m "Auto-update from Pastebin";
-            git push;
-          else
-            echo "No changes detected; skipping commit";
-          fi
+        shell: bash
+        run: git config user.name "github-actions[bot]"; git config user.email "github-actions[bot]@users.noreply.github.com"; if ! git diff --quiet pastebin-version.js; then git add pastebin-version.js; git commit -m "Auto-update from Pastebin"; git push; else echo "No changes detected; skipping commit"; fi
 
 # ← DO NOT DELETE THIS COMMENT
-# The file must end with a newline after this comment.
+# The file *must* end with a newline after this comment.
