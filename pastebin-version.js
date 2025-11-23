@@ -1,4 +1,4 @@
-(function () {
+#(function () {
     'use strict';
     // CyTube BattleTanks — Deterministic /startgame
     // Load Three.js dynamically
