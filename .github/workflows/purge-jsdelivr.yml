@@ -1,1 +1,17 @@
+name: Purge JSDelivr Cache
 
+on:
+  push:
+    paths:
+      - "pastebin-version.js"
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Purge JSDelivr
+        run: |
+          echo "Purging JSDelivr cache..."
+          curl -X GET "https://purge.jsdelivr.net/gh/aolcyberchat-gpu/cytube-tanks-script@main/pastebin-version.js"
+          echo "Purge request sent."
