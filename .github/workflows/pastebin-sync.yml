@@ -30,5 +30,3 @@ jobs:
           else
             echo "No changes detected; skipping commit"
             
-# ← DO NOT DELETE THIS COMMENT
-# The file *must* end with a newline after this comment.
