@@ -1,5 +1,4 @@
-// build: 2025-11-23T15:59:36Z
-# updated im a good boy!
+// build: 2025-11-23T16:17:28Z
 (function () {
     'use strict';
     // CyTube BattleTanks — Deterministic /startgame
