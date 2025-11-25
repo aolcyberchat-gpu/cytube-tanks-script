@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CyTube BattleTanks — Deterministic /startgame
 // @namespace    http://www.cytu.be
-// @version      1.0.10
+// @version      1.0.11
 // @description  Deterministic tanks/foes/food using /startgame <seed> on cytu.be rooms. Spawns based on room + seed + usernames so all clients see the same world.
 // @author       Guy McFurry III (adapted)
 // @match        https://cytu.be/r/*
@@ -234,8 +234,8 @@
 
                 const ux = (userPRNG() - 0.5) * 80;
                 const uz = (userPRNG() - 0.5) * 80;
-                const uvx = (userPRNG() - 0.5) * 0.7 * 4; // Speed up 4x
-                const uvz = (userPRNG() - 0.5) * 0.7 * 4; // Speed up 4x
+                const uvx = (userPRNG() - 0.5) * 0.7 * 4; // 4x speed
+                const uvz = (userPRNG() - 0.5) * 0.7 * 4; // 4x speed
                 const hue = userPRNG(); // 0..1
                 const mat = new THREE.MeshBasicMaterial({
                     map: userTex,
@@ -276,8 +276,8 @@
 
                 const x = (pr() - 0.5) * 80;
                 const z = (pr() - 0.5) * 80;
-                const vx = (pr() - 0.5) * 0.7 * 4; // Speed up 4x
-                const vz = (pr() - 0.5) * 0.7 * 4; // Speed up 4x
+                const vx = (pr() - 0.5) * 0.7 * 4; // 4x speed
+                const vz = (pr() - 0.5) * 0.7 * 4; // 4x speed
                 const hue = pr();
 
                 const mat = new THREE.MeshBasicMaterial({
@@ -304,8 +304,8 @@
 
                 const x = (pr() - 0.5) * 80;
                 const z = (pr() - 0.5) * 80;
-                const vx = (pr() - 0.5) * 0.4 * 4; // Speed up 4x
-                const vz = (pr() - 0.5) * 0.4 * 4; // Speed up 4x
+                const vx = (pr() - 0.5) * 0.4 * 4; // 4x speed
+                const vz = (pr() - 0.5) * 0.4 * 4; // 4x speed
                 const hue = pr();
 
                 const mat = new THREE.MeshBasicMaterial({
