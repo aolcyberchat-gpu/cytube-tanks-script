@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CyTube BattleTanks — Deterministic /startgame
 // @namespace    http://www.cytu.be
-// @version      1.0.11
+// @version      1.0.12
 // @description  Deterministic tanks/foes/food using /startgame <seed> on cytu.be rooms. Spawns based on room + seed + usernames so all clients see the same world.
 // @author       Guy McFurry III (adapted)
 // @match        https://cytu.be/r/*
