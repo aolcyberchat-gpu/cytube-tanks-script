@@ -1,4 +1,13 @@
-// CyTube BattleTanks — Deterministic /startgame with Outcome Hashing (v1.1.0)
+// ==UserScript==
+// @name         CyTube BattleTanks — Deterministic /startgame
+// @namespace    http://www.cytu.be
+// @version      1.0.10
+// @description  Deterministic tanks/foes/food using /startgame <seed> on cytu.be rooms. Spawns based on room + seed + usernames so all clients see the same world.
+// @author       Guy McFurry III (adapted)
+// @match        https://cytu.be/r/*
+// @grant        none
+// ==/UserScript==
+
 (function () {
     'use strict';
 
@@ -38,7 +47,7 @@
     }
 
     // --------------------
-    // Deterministic time sync
+    // Deterministic time sync (optional)
     // --------------------
     let timeOffset = 0;
     async function syncTime() {
@@ -59,7 +68,7 @@
     }
 
     // --------------------
-    // Label helper
+    // Label helper (canvas → sprite)
     // --------------------
     function createNameLabel(text) {
         const canvas = document.createElement("canvas");
@@ -225,8 +234,8 @@
 
                 const ux = (userPRNG() - 0.5) * 80;
                 const uz = (userPRNG() - 0.5) * 80;
-                const uvx = (userPRNG() - 0.5) * 0.7;
-                const uvz = (userPRNG() - 0.5) * 0.7;
+                const uvx = (userPRNG() - 0.5) * 0.7 * 4; // Speed up 4x
+                const uvz = (userPRNG() - 0.5) * 0.7 * 4; // Speed up 4x
                 const hue = userPRNG(); // 0..1
                 const mat = new THREE.MeshBasicMaterial({
                     map: userTex,
@@ -234,6 +243,7 @@
                     color: new THREE.Color().setHSL(hue, 0.8, 0.5)
                 });
                 mat.userData = { hue };
+
                 const mesh = new THREE.Mesh(entityGeo, mat);
                 mesh.position.set(ux, 1, uz);
                 mesh.castShadow = true;
@@ -266,8 +276,8 @@
 
                 const x = (pr() - 0.5) * 80;
                 const z = (pr() - 0.5) * 80;
-                const vx = (pr() - 0.5) * 0.7;
-                const vz = (pr() - 0.5) * 0.7;
+                const vx = (pr() - 0.5) * 0.7 * 4; // Speed up 4x
+                const vz = (pr() - 0.5) * 0.7 * 4; // Speed up 4x
                 const hue = pr();
 
                 const mat = new THREE.MeshBasicMaterial({
@@ -294,8 +304,8 @@
 
                 const x = (pr() - 0.5) * 80;
                 const z = (pr() - 0.5) * 80;
-                const vx = (pr() - 0.5) * 0.4;
-                const vz = (pr() - 0.5) * 0.4;
+                const vx = (pr() - 0.5) * 0.4 * 4; // Speed up 4x
+                const vz = (pr() - 0.5) * 0.4 * 4; // Speed up 4x
                 const hue = pr();
 
                 const mat = new THREE.MeshBasicMaterial({
@@ -319,6 +329,7 @@
                 console.log(` \( {e.type} \){e.id}: (\( {e.mesh.position.x.toFixed(2)}, \){e.mesh.position.z.toFixed(2)})`);
             }
         }
+
         // --- Animation (with time sync for deterministic collisions) ---
         const TIME_STEP = 0.016; // Fixed step ~60FPS
         let lastTime = getSyncedTime();
