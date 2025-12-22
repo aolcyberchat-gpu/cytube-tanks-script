@@ -1,11 +1,10 @@
 (function () {
     'use strict';
-    // CyTube BattleTanks — Deterministic /startgame <seedword>
+    // CyTube BattleTanks — Deterministic /startgame
     // Patched: event logging, final-state canonical hash, export + verification (CBT_exportProof / CBT_verifyProof)
     // Keep Three.js loader pointing to a CDN allowed by CyTube
     // Fixes: Faster velocities, prevent repeated downloads with 'ended' flag
-    // Version 1.00.01
-    
+
     function loadThree(version = '0.158.0') {
         return new Promise((resolve, reject) => {
             if (window.THREE) return resolve(window.THREE);
@@ -68,10 +67,11 @@
 
     // Velocity scales for entities (increased for faster movement)
     // Original values were 0.7 for users/foes and 0.4 for food, which made movement very slow.
-    // Increased to 7 and 4 (10x) to make entities cross the arena faster and interact more frequently.
+    // Previously increased to 7 and 4 (10x original) to make entities cross the arena faster and interact more frequently.
+    // Now further increased by 5x to 35 and 20 (50x original) per user request for even faster movement.
     // Adjust these multipliers if needed to tune speed without breaking determinism.
-    const VELOCITY_SCALE_USER_FOE = 7;  // Multiplier for user and foe velocities (higher = faster)
-    const VELOCITY_SCALE_FOOD = 4;      // Multiplier for food velocities (higher = faster)
+    const VELOCITY_SCALE_USER_FOE = 35;  // Multiplier for user and foe velocities (higher = faster)
+    const VELOCITY_SCALE_FOOD = 20;      // Multiplier for food velocities (higher = faster)
 
     // Logging / proof helpers (canonical event log)
     const EVENT_LOG = [];
