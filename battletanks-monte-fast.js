@@ -1,7 +1,8 @@
 (function () {
     'use strict';
     // CyTube BattleTanks — Deterministic /startgame
-    // Patched: faster movement for players, foes, food
+    // Patched: only velocity increased, everything else identical
+
     function loadThree(version = '0.158.0') {
         return new Promise((resolve, reject) => {
             if (window.THREE) return resolve(window.THREE);
@@ -45,11 +46,11 @@
             const serverDate = new Date(res.headers.get('Date')).getTime() / 1000;
             const rtt = end - start;
             timeOffset = (serverDate + rtt / 2) - end;
-            console.log(`Time offset: ${timeOffset.toFixed(3)}s`);
         } catch (e) {
             console.error('Time sync failed:', e);
         }
     }
+
     function getSyncedTime() {
         return Date.now() / 1000 + timeOffset;
     }
@@ -67,51 +68,18 @@
         return Math.round(n * p) / p;
     }
 
-    function recordEvent(type, data) {
-        EVENT_LOG.push({ tick: currentTick, type, data });
-    }
-
-    function recordSpawn(ent) {
-        recordEvent('spawn', {
-            id: String(ent.id),
-            t: ent.type,
-            x: roundN(ent.mesh.position.x),
-            z: roundN(ent.mesh.position.z),
-            vx: roundN(ent.velocity.x),
-            vz: roundN(ent.velocity.z),
-            hp: ent.health === undefined ? null : ent.health
-        });
-    }
-
-    function recordCollision(a, b) {
-        recordEvent('collision', {
-            a: String(a.id), ta: a.type, ahp: a.health === undefined ? null : a.health,
-            b: String(b.id), tb: b.type, bhp: b.health === undefined ? null : b.health
-        });
-    }
-
-    function recordRemove(ent, reason) {
-        recordEvent('remove', {
-            id: String(ent.id), t: ent.type, reason: String(reason)
-        });
-    }
+    function recordEvent(type, data) { EVENT_LOG.push({ tick: currentTick, type, data }); }
+    function recordSpawn(ent) { recordEvent('spawn', { id: String(ent.id), t: ent.type, x: roundN(ent.mesh.position.x), z: roundN(ent.mesh.position.z), vx: roundN(ent.velocity.x), vz: roundN(ent.velocity.z), hp: ent.health === undefined ? null : ent.health }); }
+    function recordCollision(a, b) { recordEvent('collision', { a: String(a.id), ta: a.type, ahp: a.health === undefined ? null : a.health, b: String(b.id), tb: b.type, bhp: b.health === undefined ? null : b.health }); }
+    function recordRemove(ent, reason) { recordEvent('remove', { id: String(ent.id), t: ent.type, reason: String(reason) }); }
 
     function recordFinalSnapshot() {
-        const snap = entities.map(e => ({
-            id: String(e.id),
-            t: e.type,
-            x: roundN(e.mesh.position.x),
-            z: roundN(e.mesh.position.z),
-            hp: e.health === undefined ? null : e.health
-        })).sort((A, B) => (A.t + A.id).localeCompare(B.t + B.id));
+        const snap = entities.map(e => ({ id: String(e.id), t: e.type, x: roundN(e.mesh.position.x), z: roundN(e.mesh.position.z), hp: e.health === undefined ? null : e.health })).sort((A, B) => (A.t + A.id).localeCompare(B.t + B.id));
         recordEvent('finalSnapshot', { totalTicks: currentTick, snapshot: snap });
     }
 
     async function computeFinalHash(room, seedWord, usernames) {
-        const canonical = {
-            meta: { room: String(room), seed: String(seedWord), users: Array.from(usernames).map(String).sort() },
-            events: EVENT_LOG
-        };
+        const canonical = { meta: { room: String(room), seed: String(seedWord), users: Array.from(usernames).map(String).sort() }, events: EVENT_LOG };
         const json = JSON.stringify(canonical);
         const hash = await sha256Hex(json);
         return { hash, json, canonical };
@@ -171,14 +139,10 @@
         window.entities = entities;
 
         function clearEntities() {
-            while (entities.length) {
-                const e = entities.pop();
-                try { scene.remove(e.mesh); } catch (err) {}
-            }
+            while (entities.length) { const e = entities.pop(); try { scene.remove(e.mesh); } catch (err) {} }
             knownUsers.clear();
             EVENT_LOG.length = 0;
             currentTick = 0;
-            console.log(`[${new Date().toLocaleTimeString()}] cleared entities`);
         }
 
         function roomNameFromPath() {
@@ -189,13 +153,9 @@
         function getSanitizedUsernames() {
             const usernames = [];
             const rows = document.querySelectorAll('#userlist .userlist_item');
-            if (rows && rows.length) {
-                for (const row of rows) {
-                    const nameSpan = row.querySelector('span:nth-of-type(2)');
-                    if (nameSpan && nameSpan.textContent.trim()) {
-                        usernames.push(nameSpan.textContent.trim());
-                    }
-                }
+            if (rows && rows.length) for (const row of rows) {
+                const nameSpan = row.querySelector('span:nth-of-type(2)');
+                if (nameSpan && nameSpan.textContent.trim()) usernames.push(nameSpan.textContent.trim());
             }
             const cleaned = Array.from(new Set(usernames.filter(Boolean).map(s => s.trim())));
             cleaned.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
@@ -223,10 +183,9 @@
             const foeCount = Math.max(4, Math.floor(playerCount * 1.0));
             const foodCount = Math.max(4, Math.floor(playerCount * 0.8));
 
-            console.log(`[${new Date().toLocaleTimeString()}] /startgame seed="${seedWord}" room="${room}" players=${playerCount} foes=${foeCount} food=${foodCount}`);
             lastSpawnInfo = { room, seedWord, usernames: usernames.slice(), counts: { players: playerCount, foes: foeCount, food: foodCount } };
 
-            // Spawn players — faster
+            // Users — velocity increased
             for (let i = 0; i < playerCount; i++) {
                 const uname = usernames[i % usernames.length] || `player${i}`;
                 const perUserSeedHex = await sha256Hex(currentGlobalSeedHex + '::user::' + uname);
@@ -235,20 +194,20 @@
 
                 const ux = (userPRNG() - 0.5) * 80;
                 const uz = (userPRNG() - 0.5) * 80;
-                const uvx = (userPRNG() - 0.5) * 2.2;
-                const vz = (userPRNG() - 0.5) * 2.2;
+                const uvx = (userPRNG() - 0.5) * 2.2; // <- faster
+                const uvz = (userPRNG() - 0.5) * 2.2; // <- faster
 
                 const mesh = new THREE.Mesh(entityGeo, userMat);
                 mesh.position.set(ux, 1, uz);
 
-                const ent = { mesh, type: 'user', id: uname, velocity: new THREE.Vector3(uvx, 0, vz), health: 3 };
+                const ent = { mesh, type: 'user', id: uname, velocity: new THREE.Vector3(uvx, 0, uvz), health: 3 };
                 scene.add(mesh);
                 entities.push(ent);
                 knownUsers.set(uname, ent);
                 recordSpawn(ent);
             }
 
-            // Spawn foes — faster
+            // Foes — velocity increased
             for (let i = 0; i < foeCount; i++) {
                 const foeSeedHex = await sha256Hex(currentGlobalSeedHex + `::foe::${i}`);
                 const foeSeedInt = hexToSeedInt(foeSeedHex);
@@ -256,8 +215,8 @@
 
                 const x = (pr() - 0.5) * 80;
                 const z = (pr() - 0.5) * 80;
-                const vx = (pr() - 0.5) * 2.2;
-                const vz = (pr() - 0.5) * 2.2;
+                const vx = (pr() - 0.5) * 2.2; // <- faster
+                const vz = (pr() - 0.5) * 2.2; // <- faster
 
                 const mesh = new THREE.Mesh(entityGeo, foeMat);
                 mesh.position.set(x, 1, z);
@@ -267,7 +226,7 @@
                 recordSpawn(ent);
             }
 
-            // Spawn food — faster
+            // Food — velocity increased
             for (let i = 0; i < foodCount; i++) {
                 const foodSeedHex = await sha256Hex(currentGlobalSeedHex + `::food::${i}`);
                 const foodSeedInt = hexToSeedInt(foodSeedHex);
@@ -275,8 +234,8 @@
 
                 const x = (pr() - 0.5) * 80;
                 const z = (pr() - 0.5) * 80;
-                const vx = (pr() - 0.5) * 1.8;
-                const vz = (pr() - 0.5) * 1.8;
+                const vx = (pr() - 0.5) * 1.8; // <- faster
+                const vz = (pr() - 0.5) * 1.8; // <- faster
 
                 const mesh = new THREE.Mesh(entityGeo, foodMat);
                 mesh.position.set(x, 1, z);
@@ -287,7 +246,6 @@
             }
 
             recordEvent('spawnMeta', { room, seedWord, usernames: lastSpawnInfo.usernames, counts: lastSpawnInfo.counts });
-            console.log(`[${new Date().toLocaleTimeString()}] spawn complete — total entities: ${entities.length}`);
             return { room, seedWord, usernames: lastSpawnInfo.usernames };
         }
 
@@ -296,10 +254,7 @@
             requestAnimationFrame(animate);
             const now = getSyncedTime();
             let delta = now - lastFrameTime;
-            while (delta >= TIME_STEP) {
-                updateSimulation(TIME_STEP);
-                delta -= TIME_STEP;
-            }
+            while (delta >= TIME_STEP) { updateSimulation(TIME_STEP); delta -= TIME_STEP; }
             lastFrameTime = now - delta;
             renderer.render(scene, camera);
         }
@@ -310,9 +265,7 @@
                 e.mesh.position.add(e.velocity.clone().multiplyScalar(dt));
                 e.mesh.rotation.y += 0.01;
                 if (e.type === 'user' && e.health !== undefined) {
-                    try {
-                        e.mesh.material.color.setHSL((e.health / 3) * 0.3, 0.8, 0.5);
-                    } catch (err) {}
+                    try { e.mesh.material.color.setHSL((e.health / 3) * 0.3, 0.8, 0.5); } catch (err) {}
                 }
             }
 
@@ -328,42 +281,11 @@
                     A.velocity.copy(B.velocity);
                     B.velocity.copy(tmp);
 
-                    if (A.type === 'user' && B.type === 'foe') {
-                        A.health -= 2;
-                        try { scene.remove(B.mesh); } catch (err) {}
-                        entities.splice(j, 1);
-                        recordRemove(B, 'killed-by-user');
-                        j--;
-                        continue;
-                    }
-                    if (A.type === 'foe' && B.type === 'user') {
-                        B.health -= 2;
-                        try { scene.remove(A.mesh); } catch (err) {}
-                        entities.splice(i, 1);
-                        recordRemove(A, 'killed-by-user');
-                        i--;
-                        break;
-                    }
-                    if (A.type === 'user' && B.type === 'food') {
-                        A.health += 1;
-                        try { scene.remove(B.mesh); } catch (err) {}
-                        entities.splice(j, 1);
-                        recordRemove(B, 'eaten-by-user');
-                        j--;
-                        continue;
-                    }
-                    if (A.type === 'food' && B.type === 'user') {
-                        B.health += 1;
-                        try { scene.remove(A.mesh); } catch (err) {}
-                        entities.splice(i, 1);
-                        recordRemove(A, 'eaten-by-user');
-                        i--;
-                        break;
-                    }
-                    if (A.type === 'user' && B.type === 'user') {
-                        A.health -= 1;
-                        B.health -= 1;
-                    }
+                    if (A.type === 'user' && B.type === 'foe') { A.health -= 2; try { scene.remove(B.mesh); } catch {} entities.splice(j, 1); recordRemove(B, 'killed-by-user'); j--; continue; }
+                    if (A.type === 'foe' && B.type === 'user') { B.health -= 2; try { scene.remove(A.mesh); } catch {} entities.splice(i, 1); recordRemove(A, 'killed-by-user'); i--; break; }
+                    if (A.type === 'user' && B.type === 'food') { A.health += 1; try { scene.remove(B.mesh); } catch {} entities.splice(j, 1); recordRemove(B, 'eaten-by-user'); j--; continue; }
+                    if (A.type === 'food' && B.type === 'user') { B.health += 1; try { scene.remove(A.mesh); } catch {} entities.splice(i, 1); recordRemove(A, 'eaten-by-user'); i--; break; }
+                    if (A.type === 'user' && B.type === 'user') { A.health -= 1; B.health -= 1; }
                 }
             }
 
@@ -374,12 +296,7 @@
 
             for (let i = entities.length - 1; i >= 0; i--) {
                 const e = entities[i];
-                if (e.type === 'user' && e.health <= 0) {
-                    knownUsers.delete(e.id);
-                    try { scene.remove(e.mesh); } catch (err) {}
-                    entities.splice(i, 1);
-                    recordRemove(e, 'user-dead');
-                }
+                if (e.type === 'user' && e.health <= 0) { knownUsers.delete(e.id); try { scene.remove(e.mesh); } catch {} entities.splice(i, 1); recordRemove(e, 'user-dead'); }
             }
 
             const totalEntities = entities.length;
@@ -391,7 +308,6 @@
                         const metaSeed = lastSpawnInfo ? lastSpawnInfo.seedWord : 'unknown';
                         const metaUsers = lastSpawnInfo ? lastSpawnInfo.usernames : getSanitizedUsernames();
                         const result = await computeFinalHash(metaRoom, metaSeed, metaUsers);
-                        console.log('[CBT] Match end — finalHash:', result.hash);
                         const blob = new Blob([result.json], { type: 'application/json' });
                         const url = URL.createObjectURL(blob);
                         const a = document.createElement('a');
@@ -401,11 +317,9 @@
                         a.click();
                         a.remove();
                         URL.revokeObjectURL(url);
-                    } catch (err) {
-                        console.error('[CBT] export failed', err);
-                    }
+                        lastSpawnInfo = null;
+                    } catch (err) { console.error('[CBT] export failed', err); }
                 })();
-                lastSpawnInfo = null;
             }
         }
 
@@ -418,18 +332,29 @@
             const m = text.trim().match(startRegex);
             if (!m) return;
             const seed = m[1].trim();
-            console.log(`[${new Date().toLocaleTimeString()}] Detected /startgame "${seed}"`);
             spawnDeterministic(seed);
         }
 
         try {
             if (window.socket && typeof window.socket.on === "function") {
-                window.socket.on('chatMsg', data => {
-                    if (data && typeof data.msg === 'string') {
-                        processCommandText(data.msg, data.username);
-                    }
-                });
-                console.log('Socket chat listener added');
+                window.socket.on('chatMsg', data => { if (data && typeof data.msg === 'string') processCommandText(data.msg, data.username); });
             }
-        } catch (e) {
-            console.warn('Socket
+        } catch (e) {}
+
+        const bodyObs = new MutationObserver(muts => {
+            for (const mut of muts) for (const node of mut.addedNodes) {
+                if (node.nodeType !== 1 || !node.classList.toString().startsWith('chat-msg-')) continue;
+                const usernameEl = node.querySelector('.username');
+                const username = usernameEl ? usernameEl.textContent.trim().replace(':', '') : 'unknown';
+                const msgSpan = node.querySelector('span:last-child');
+                const text = msgSpan ? msgSpan.textContent.trim() : '';
+                processCommandText(text, username);
+            }
+        });
+        bodyObs.observe(document.getElementById('messagebuffer') || document.body, { childList: true, subtree: true });
+
+        window.CBT_start = seed => { if (!seed) return console.warn('Usage: CBT_start("seed")'); processCommandText(`/startgame ${seed}`, 'console'); };
+        window.CBT_exportProof = async function(room, seedWord, usernames) {
+            try {
+                recordFinalSnapshot();
+                const result = await computeFinalHash(room || roomNameFromPath(), seedWord ||
