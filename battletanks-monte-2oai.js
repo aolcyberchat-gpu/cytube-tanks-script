@@ -1,5 +1,5 @@
 // ============================================================
-//  CyTube BattleTanks — Deterministic Monte Version (SPEED FIX)
+//  CyTube BattleTanks — Deterministic Monte (DISPLAY FIXED)
 // ============================================================
 
 (function () {
@@ -13,7 +13,7 @@
     // -----------------------------
     const WORLD_SIZE = 80;
     const FIXED_DT = 1 / 60;
-    const SPEED_SCALE = 80; // ✅ RESTORED ORIGINAL MOTION SPEED
+    const SPEED_SCALE = 80; // restored motion speed
 
     const BASE_TANK_HP = 100;
     const BASE_FOE_HP = 40;
@@ -47,7 +47,7 @@
     }
 
     // -----------------------------
-    // Three.js bootstrap
+    // Three.js loader
     // -----------------------------
     function loadThree(cb) {
         if (window.THREE) return cb();
@@ -58,7 +58,7 @@
     }
 
     // -----------------------------
-    // Game State
+    // State
     // -----------------------------
     let scene, camera, renderer;
     let entities = [];
@@ -67,9 +67,11 @@
     let lastTime = performance.now();
 
     // -----------------------------
-    // Entity helpers
+    // Entity spawn
     // -----------------------------
     function spawnEntity(type, prng, hp) {
+        if (!scene) return;
+
         const geom =
             type === 'tank'
                 ? new THREE.BoxGeometry(2, 1, 3)
@@ -92,22 +94,19 @@
             (prng() - 0.5) * WORLD_SIZE
         );
 
-        const vx = (prng() - 0.5) * 0.7 * SPEED_SCALE; // ✅ FIX
-        const vz = (prng() - 0.5) * 0.7 * SPEED_SCALE; // ✅ FIX
-
         scene.add(mesh);
 
         entities.push({
             type,
             mesh,
-            vx,
-            vz,
+            vx: (prng() - 0.5) * SPEED_SCALE,
+            vz: (prng() - 0.5) * SPEED_SCALE,
             hp
         });
     }
 
     // -----------------------------
-    // Physics + collisions
+    // Simulation
     // -----------------------------
     function stepSimulation() {
         for (const e of entities) {
@@ -126,9 +125,7 @@
 
                 const dx = a.mesh.position.x - b.mesh.position.x;
                 const dz = a.mesh.position.z - b.mesh.position.z;
-                const dist = Math.hypot(dx, dz);
-
-                if (dist < COLLISION_RADIUS) {
+                if (Math.hypot(dx, dz) < COLLISION_RADIUS) {
                     if (a.type === 'tank' && b.type === 'food') {
                         a.hp += FOOD_HEAL;
                         scene.remove(b.mesh);
@@ -152,7 +149,7 @@
     // Render loop
     // -----------------------------
     function animate(now) {
-        if (!running) return;
+        if (!running || !renderer) return;
         requestAnimationFrame(animate);
 
         accumulator += (now - lastTime) / 1000;
@@ -170,7 +167,10 @@
     // Start game
     // -----------------------------
     window.startBattleTanks = async function (seedWord) {
-        running = false;
+        if (!scene) return;
+
+        // remove old meshes
+        for (const e of entities) scene.remove(e.mesh);
         entities.length = 0;
 
         const room = window.CLIENT?.name || 'default';
@@ -180,17 +180,17 @@
         const seedHex = await sha256Hex(room + seedWord + users.join(','));
         const prng = mulberry32(seedFromString(seedHex));
 
-        scene.clear();
-
         for (let i = 0; i < userCount; i++) {
             spawnEntity('tank', prng, BASE_TANK_HP);
         }
 
-        const foeCount = Math.max(1, Math.floor(userCount * 1.5));
-        const foodCount = Math.max(1, Math.floor(userCount * 1.2));
+        for (let i = 0; i < Math.max(1, userCount * 1.5); i++) {
+            spawnEntity('foe', prng, BASE_FOE_HP);
+        }
 
-        for (let i = 0; i < foeCount; i++) spawnEntity('foe', prng, BASE_FOE_HP);
-        for (let i = 0; i < foodCount; i++) spawnEntity('food', prng, 1);
+        for (let i = 0; i < Math.max(1, userCount * 1.2); i++) {
+            spawnEntity('food', prng, 1);
+        }
 
         running = true;
         lastTime = performance.now();
@@ -203,7 +203,12 @@
     loadThree(() => {
         scene = new THREE.Scene();
 
-        camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 500);
+        camera = new THREE.PerspectiveCamera(
+            60,
+            window.innerWidth / window.innerHeight,
+            0.1,
+            500
+        );
         camera.position.set(0, 20, 40);
         camera.lookAt(0, 0, 0);
 
@@ -212,6 +217,7 @@
         renderer.domElement.style.position = 'fixed';
         renderer.domElement.style.top = '0';
         renderer.domElement.style.left = '0';
+        renderer.domElement.style.pointerEvents = 'none';
         renderer.domElement.style.zIndex = '0';
 
         document.body.appendChild(renderer.domElement);
