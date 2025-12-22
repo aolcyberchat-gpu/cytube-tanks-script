@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CyTube BattleTanks — Deterministic /startgame
 // @namespace    http://www.cytu.be
-// @version      1.0.10
+// @version      1.0.11
 // @description  Deterministic tanks/foes/food using /startgame <seed> on cytu.be rooms. Spawns based on room + seed + usernames so all clients see the same world.
 // @author       Guy McFurry III (adapted)
 // @match        https://cytu.be/r/BLOGUS
@@ -82,14 +82,15 @@
 
         // Terrain
         const terrainGeo = new THREE.PlaneGeometry(100, 100, 60, 60);
-        const terrainMat = new THREE.MeshBasicMaterial({ color: 0x00aa88, wireframe: true });
+        const loader = new THREE.TextureLoader();
+        const terrainTex = loader.load('https://i.ibb.co/LBGxqDV/terrian-level-001.gif');
+        const terrainMat = new THREE.MeshBasicMaterial({ map: terrainTex, wireframe: false });
         const terrain = new THREE.Mesh(terrainGeo, terrainMat);
         terrain.rotation.x = -Math.PI / 2;
         scene.add(terrain);
         scene.add(new THREE.AmbientLight(0xffffff));
 
         // Textures
-        const loader = new THREE.TextureLoader();
         const userTex = loader.load('https://i.ibb.co/WQ9Py5J/Apu-Radio-Its-Over.webp');
         const foeTex = loader.load('https://i.ibb.co/MkG52QDN/Blogus-Foe.webp');
         const foodTex = loader.load('https://i.ibb.co/chvzwJhg/Food-Burger.webp');
