@@ -57,12 +57,13 @@
         return Date.now() / 1000 + timeOffset;
     }
 
-    // Configuration
-    const TIME_STEP = 0.016;
-    const MAX_MINUTES = 40;
+    // Configuration: tweak if desired
+    const TIME_STEP = 0.016;           // fixed physics step (seconds)
+    const MAX_MINUTES = 40;           // max match runtime (minutes) before forcing export
     const MAX_TICKS = Math.round((MAX_MINUTES * 60) / TIME_STEP);
-    const TICK_PRECISION = 3;
+    const TICK_PRECISION = 3;         // decimals for canonicalization in outputs
 
+    // Logging / proof helpers (canonical event log)
     const EVENT_LOG = [];
     let currentTick = 0;
 
@@ -112,6 +113,7 @@
     }
 
     async function computeFinalHash(room, seedWord, usernames) {
+        // canonical object (no variable noise such as local date/time in hash)
         const canonical = {
             meta: { room: String(room), seed: String(seedWord), users: Array.from(usernames).map(String).sort() },
             events: EVENT_LOG
@@ -121,10 +123,12 @@
         return { hash, json, canonical };
     }
 
+    // Main script
     async function main() {
         await syncTime();
         await loadThree().catch(err => console.error("Failed to load Three.js", err));
 
+        // Canvas + renderer
         const canvas = document.createElement('canvas');
         canvas.style.position = 'fixed';
         canvas.style.top = '0';
@@ -150,10 +154,12 @@
             camera.updateProjectionMatrix();
         });
 
+        // Expose for debug
         window.renderer = renderer;
         window.scene = scene;
         window.camera = camera;
 
+        // Terrain
         const terrainGeo = new THREE.PlaneGeometry(100, 100, 60, 60);
         const terrainMat = new THREE.MeshBasicMaterial({ color: 0x00aa88, wireframe: true });
         const terrain = new THREE.Mesh(terrainGeo, terrainMat);
@@ -161,6 +167,7 @@
         scene.add(terrain);
         scene.add(new THREE.AmbientLight(0xffffff));
 
+        // Textures & materials
         const loader = new THREE.TextureLoader();
         const userTex = loader.load('https://i.ibb.co/WQ9Py5J/Apu-Radio-Its-Over.webp');
         const foeTex = loader.load('https://i.ibb.co/MkG52QDN/Blogus-Foe.webp');
@@ -174,6 +181,7 @@
         const knownUsers = new Map();
         window.entities = entities;
 
+        // Utilities
         function clearEntities() {
             while (entities.length) {
                 const e = entities.pop();
@@ -185,6 +193,7 @@
             console.log(`[${new Date().toLocaleTimeString()}] cleared entities`);
         }
 
+        // Room and user helpers
         function roomNameFromPath() {
             const parts = (window.location.pathname || '').split('/');
             return parts[parts.length - 1] || 'room';
@@ -206,11 +215,13 @@
             return cleaned;
         }
 
+        // Deterministic spawn
         let currentGlobalSeedHex = null;
         let globalPRNG = null;
         let lastSpawnInfo = null;
 
         async function spawnDeterministic(seedWord, { autoExportOnEnd = true } = {}) {
+            // Reset tick and event log
             currentTick = 0;
             EVENT_LOG.length = 0;
 
@@ -230,7 +241,7 @@
             console.log(`[${new Date().toLocaleTimeString()}] /startgame seed="${seedWord}" room="${room}" players=${playerCount} foes=${foeCount} food=${foodCount}`);
             lastSpawnInfo = { room, seedWord, usernames: usernames.slice(), counts: { players: playerCount, foes: foeCount, food: foodCount } };
 
-            // Spawn players (faster velocity)
+            // Spawn players
             for (let i = 0; i < playerCount; i++) {
                 const uname = usernames[i % usernames.length] || `player${i}`;
                 const perUserSeedHex = await sha256Hex(currentGlobalSeedHex + '::user::' + uname);
@@ -239,8 +250,8 @@
 
                 const ux = (userPRNG() - 0.5) * 80;
                 const uz = (userPRNG() - 0.5) * 80;
-                const uvx = (userPRNG() - 0.5) * 0.7 * 2.5;
-                const uvz = (userPRNG() - 0.5) * 0.7 * 2.5;
+                const uvx = (userPRNG() - 0.5) * 0.7;
+                const uvz = (userPRNG() - 0.5) * 0.7;
 
                 const mesh = new THREE.Mesh(entityGeo, userMat);
                 mesh.position.set(ux, 1, uz);
@@ -252,7 +263,7 @@
                 recordSpawn(ent);
             }
 
-            // Spawn foes (faster)
+            // Spawn foes
             for (let i = 0; i < foeCount; i++) {
                 const foeSeedHex = await sha256Hex(currentGlobalSeedHex + `::foe::${i}`);
                 const foeSeedInt = hexToSeedInt(foeSeedHex);
@@ -260,8 +271,8 @@
 
                 const x = (pr() - 0.5) * 80;
                 const z = (pr() - 0.5) * 80;
-                const vx = (pr() - 0.5) * 0.7 * 3.5;
-                const vz = (pr() - 0.5) * 0.7 * 3.5;
+                const vx = (pr() - 0.5) * 0.7;
+                const vz = (pr() - 0.5) * 0.7;
 
                 const mesh = new THREE.Mesh(entityGeo, foeMat);
                 mesh.position.set(x, 1, z);
@@ -271,7 +282,7 @@
                 recordSpawn(ent);
             }
 
-            // Spawn food (faster)
+            // Spawn food
             for (let i = 0; i < foodCount; i++) {
                 const foodSeedHex = await sha256Hex(currentGlobalSeedHex + `::food::${i}`);
                 const foodSeedInt = hexToSeedInt(foodSeedHex);
@@ -279,8 +290,8 @@
 
                 const x = (pr() - 0.5) * 80;
                 const z = (pr() - 0.5) * 80;
-                const vx = (pr() - 0.5) * 0.4 * 2.5;
-                const vz = (pr() - 0.5) * 0.4 * 2.5;
+                const vx = (pr() - 0.5) * 0.4;
+                const vz = (pr() - 0.5) * 0.4;
 
                 const mesh = new THREE.Mesh(entityGeo, foodMat);
                 mesh.position.set(x, 1, z);
@@ -290,16 +301,20 @@
                 recordSpawn(ent);
             }
 
+            // Save spawn meta into the event log as a deterministic seed record
             recordEvent('spawnMeta', { room, seedWord, usernames: lastSpawnInfo.usernames, counts: lastSpawnInfo.counts });
+
             console.log(`[${new Date().toLocaleTimeString()}] spawn complete — total entities: ${entities.length}`);
             return { room, seedWord, usernames: lastSpawnInfo.usernames };
         }
 
+        // Animation & simulation
         let lastFrameTime = getSyncedTime();
         function animate() {
             requestAnimationFrame(animate);
             const now = getSyncedTime();
             let delta = now - lastFrameTime;
+            // run fixed timestep as many times as needed
             while (delta >= TIME_STEP) {
                 updateSimulation(TIME_STEP);
                 delta -= TIME_STEP;
@@ -309,12 +324,16 @@
         }
 
         function updateSimulation(dt) {
+            // increment tick count once per physics step
             currentTick++;
+
+            // update positions
             for (const e of entities) {
                 e.mesh.position.add(e.velocity.clone().multiplyScalar(dt));
                 e.mesh.rotation.y += 0.01;
                 if (e.type === 'user' && e.health !== undefined) {
                     try {
+                        // Use HSL visual based on health (3 -> green, 0 -> red)
                         e.mesh.material.color.setHSL((e.health / 3) * 0.3, 0.8, 0.5);
                     } catch (err) {}
                 }
@@ -327,14 +346,19 @@
                     const boxA = new THREE.Box3().setFromObject(A.mesh);
                     const boxB = new THREE.Box3().setFromObject(B.mesh);
                     if (!boxA.intersectsBox(boxB)) continue;
+
+                    // record collision event
                     recordCollision(A, B);
 
+                    // basic velocity swap for bounce
                     const tmp = A.velocity.clone();
                     A.velocity.copy(B.velocity);
                     B.velocity.copy(tmp);
 
+                    // interactions
                     if (A.type === 'user' && B.type === 'foe') {
                         A.health -= 2;
+                        // remove foe (B)
                         try { scene.remove(B.mesh); } catch (err) {}
                         entities.splice(j, 1);
                         recordRemove(B, 'killed-by-user');
@@ -372,11 +396,13 @@
                 }
             }
 
+            // boundary collisions (bounce)
             for (const e of entities) {
                 if (e.mesh.position.x > 49 || e.mesh.position.x < -49) e.velocity.x *= -1;
                 if (e.mesh.position.z > 49 || e.mesh.position.z < -49) e.velocity.z *= -1;
             }
 
+            // remove dead users
             for (let i = entities.length - 1; i >= 0; i--) {
                 const e = entities[i];
                 if (e.type === 'user' && e.health <= 0) {
@@ -387,9 +413,14 @@
                 }
             }
 
+            // auto end detection:
+            // - If only 0 or 1 entities remain, we consider the match finished
+            // - Or if tick count exceeds MAX_TICKS -> forced end
             const totalEntities = entities.length;
             if (totalEntities <= 1 || currentTick >= MAX_TICKS) {
+                // record final snapshot and export proof
                 recordFinalSnapshot();
+                // compute and offer export
                 (async () => {
                     try {
                         const metaRoom = lastSpawnInfo ? lastSpawnInfo.room : roomNameFromPath();
@@ -397,6 +428,7 @@
                         const metaUsers = lastSpawnInfo ? lastSpawnInfo.usernames : getSanitizedUsernames();
                         const result = await computeFinalHash(metaRoom, metaSeed, metaUsers);
                         console.log('[CBT] Match end — finalHash:', result.hash);
+                        // download file
                         const blob = new Blob([result.json], { type: 'application/json' });
                         const url = URL.createObjectURL(blob);
                         const a = document.createElement('a');
@@ -406,17 +438,109 @@
                         a.click();
                         a.remove();
                         URL.revokeObjectURL(url);
+                        // keep event log available in memory (EVENT_LOG), don't clear automatically
                     } catch (err) {
                         console.error('[CBT] export failed', err);
                     }
                 })();
+                // After exporting, we do NOT automatically clear — keep scene visible so people can view.
+                // Reset lastSpawnInfo so repeated end triggers won't re-export repeatedly
                 lastSpawnInfo = null;
             }
         }
 
         animate();
 
+        // --- Chat command detection ---
         const startRegex = /^\/startgame\s+(.+)$/i;
 
         function processCommandText(text, username) {
             if (!text) return;
+            const m = text.trim().match(startRegex);
+            if (!m) return;
+            const seed = m[1].trim();
+            console.log(`[${new Date().toLocaleTimeString()}] Detected /startgame "${seed}"`);
+            spawnDeterministic(seed);
+        }
+
+        // Socket listener + fallback
+        try {
+            if (window.socket && typeof window.socket.on === "function") {
+                window.socket.on('chatMsg', data => {
+                    if (data && typeof data.msg === 'string') {
+                        processCommandText(data.msg, data.username);
+                    }
+                });
+                console.log('Socket chat listener added');
+            }
+        } catch (e) {
+            console.warn('Socket not accessible:', e);
+        }
+
+        const bodyObs = new MutationObserver(muts => {
+            for (const mut of muts) {
+                for (const node of mut.addedNodes) {
+                    if (node.nodeType !== 1 || !node.classList.toString().startsWith('chat-msg-')) continue;
+                    const usernameEl = node.querySelector('.username');
+                    const username = usernameEl ? usernameEl.textContent.trim().replace(':', '') : 'unknown';
+                    const msgSpan = node.querySelector('span:last-child');
+                    const text = msgSpan ? msgSpan.textContent.trim() : '';
+                    processCommandText(text, username);
+                }
+            }
+        });
+        bodyObs.observe(document.getElementById('messagebuffer') || document.body, { childList: true, subtree: true });
+
+        // Expose helpers to console/users
+        window.CBT_start = seed => {
+            if (!seed) return console.warn('Usage: CBT_start("seed")');
+            processCommandText(`/startgame ${seed}`, 'console');
+        };
+
+        window.CBT_exportProof = async function(room, seedWord, usernames) {
+            // manual export if you want to force a proof
+            try {
+                recordFinalSnapshot();
+                const result = await computeFinalHash(room || roomNameFromPath(), seedWord || (lastSpawnInfo && lastSpawnInfo.seedWord) || 'manual', usernames || (lastSpawnInfo && lastSpawnInfo.usernames) || getSanitizedUsernames());
+                const blob = new Blob([result.json], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `battle-proof-${result.hash}.json`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+                console.log('[CBT] Exported proof, hash:', result.hash);
+                return result.hash;
+            } catch (err) {
+                console.error('[CBT] export error', err);
+                throw err;
+            }
+        };
+
+        window.CBT_verifyProof = async function(proofJSON) {
+            // Verify a proof file (string or object): recompute SHA256 over canonical structure and compare.
+            try {
+                const parsed = (typeof proofJSON === 'string') ? JSON.parse(proofJSON) : proofJSON;
+                if (!parsed || !parsed.meta || !parsed.events) {
+                    console.warn('Not a valid proof JSON');
+                    return false;
+                }
+                const json = JSON.stringify(parsed);
+                const h = await sha256Hex(json);
+                // The proof object itself does not contain 'hash' field — we produce the hash from object's canonical serialization.
+                // If you stored the hash inside the proof previously, compare to that value.
+                console.log('[CBT] computed proof hash:', h);
+                return h;
+            } catch (err) {
+                console.error('[CBT] verify failed', err);
+                return false;
+            }
+        };
+
+        console.log(`[${new Date().toLocaleTimeString()}] CyTube BattleTanks loaded. Type "/startgame <seed>" in chat to spawn.`);
+    }
+
+    main().catch(err => console.error("BattleTanks init error", err));
+})();
