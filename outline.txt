@@ -1,0 +1,90 @@
+# CyTube BattleTanks
+## A Deterministic, Chat-Driven Multiplayer Game Engine
+
+CyTube BattleTanks is a deterministic, browser-based multiplayer game that runs entirely client-side and uses chat messages as its only input channel. Inspired by classic MUDs (Multi-User Dungeons), early BBS games, and shared-screen arcade simulations, the system is designed to operate without a server-side game authority while still presenting a shared, verifiable world state to all players.
+
+The game leverages deterministic seeding, fixed-tick simulation, and chat-based commands to ensure that every connected client independently computes the same outcomes. This makes it uniquely suited to CyTube’s environment, where JavaScript clients can observe chat but cannot exchange real-time positional data between users.
+
+## Why This Works on CyTube
+
+CyTube provides:
+- A shared chat stream visible to all users
+- Usernames and room names that are globally known
+- Client-side JavaScript execution
+- No reliable real-time peer-to-peer data channel
+
+BattleTanks embraces these constraints rather than fighting them.
+
+Instead of syncing positions, velocities, or health over a server, all game state is:
+- Derived deterministically from shared inputs (room, usernames, seed words)
+- Updated identically on every client using fixed-step simulation
+- Influenced only by chat messages, which CyTube already synchronizes
+
+This mirrors how classic text MUDs worked:
+- The "world" exists as a deterministic state machine
+- Commands are discrete text inputs
+- All players receive the same authoritative narrative updates
+
+BattleTanks replaces text descriptions with visual simulations while preserving the same architectural philosophy.
+
+## Core Design Principles
+
+1. Determinism Above All
+   - Every client must arrive at the same world state independently.
+   - No hidden randomness affects gameplay-critical logic.
+   - If two clients disagree, the design has failed.
+
+2. Chat Is the Controller
+   - All player input comes through chat commands.
+   - Movement, actions, and triggers are text-based.
+   - There is no keyboard, mouse, or real-time input dependency.
+
+3. Private Stimuli, Public Consequences
+   - Some visuals may be client-only and non-deterministic.
+   - These never affect state directly.
+   - They exist to prompt players to type commands that do affect state.
+
+4. Levels as State Transitions
+   - Levels are not separate games but deterministic phase changes.
+   - Transitions occur when conditions are met, not on timers.
+
+5. Verifiable Outcomes
+   - Game runs can be hashed.
+   - Rare or long survivorship outcomes can be proven and replayed.
+
+## World Model
+
+The world advances in fixed ticks.
+Each tick applies the same logic on every client.
+
+State includes:
+- Entity list
+- Positions and velocities
+- Health values
+- Current level
+- Event history
+
+No floating, unsynchronized real time is used for logic.
+Rendering may interpolate, but simulation does not.
+
+## Entities
+
+- Tank
+  Player-controlled entity in Level One.
+  Has health, velocity, and collision logic.
+
+- Ghost
+  Player-controlled entity after tank death.
+  Can move via chat commands and influence later levels.
+
+- Foe
+  Hostile NPC entity.
+  Deterministically spawned.
+  Interacts via collisions.
+
+- Food
+  Health-restoring entity.
+
+- Potion
+  Special deterministic trigger entity.
+  Causes level transitions and private stimuli.
