@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CyTube BattleTanks — Deterministic /startgame
 // @namespace    http://www.cytu.be
-// @version      1.0.11
+// @version      1.0.12
 // @description  Deterministic tanks/foes/food using /startgame <seed> on cytu.be rooms. Spawns based on room + seed + usernames so all clients see the same world.
 // @author       Guy McFurry III (adapted)
 // @match        https://cytu.be/r/BLOGUS
@@ -94,6 +94,7 @@
         const userTex = loader.load('https://i.ibb.co/WQ9Py5J/Apu-Radio-Its-Over.webp');
         const foeTex = loader.load('https://i.ibb.co/MkG52QDN/Blogus-Foe.webp');
         const foodTex = loader.load('https://i.ibb.co/chvzwJhg/Food-Burger.webp');
+        const ghostTex = loader.load('https://i.ibb.co/CKMC9K3v/ghost-user.gif');
 
         // Materials - now with color tinting for health
         const userMatGreen = new THREE.MeshBasicMaterial({ map: userTex, color: 0x00ff00 });
@@ -101,6 +102,7 @@
         const userMatRed = new THREE.MeshBasicMaterial({ map: userTex, color: 0xff0000 });
         const foeMat = new THREE.MeshBasicMaterial({ map: foeTex });
         const foodMat = new THREE.MeshBasicMaterial({ map: foodTex });
+        const ghostMat = new THREE.MeshBasicMaterial({ map: ghostTex });
         const entityGeo = new THREE.BoxGeometry(2, 3, 2);
 
         const entities = [];
@@ -333,6 +335,9 @@
             for (let i = 0; i < entities.length; i++) {
                 for (let j = i + 1; j < entities.length; j++) {
                     const A = entities[i], B = entities[j];
+
+                    if (A.type === 'ghost' || B.type === 'ghost') continue;
+
                     const boxA = new THREE.Box3().setFromObject(A.mesh);
                     const boxB = new THREE.Box3().setFromObject(B.mesh);
                     if (!boxA.intersectsBox(boxB)) continue;
@@ -357,10 +362,10 @@
             for (let i = entities.length - 1; i >= 0; i--) {
                 const e = entities[i];
                 if (e.type === 'user' && e.health <= 0) { 
+                    e.type = 'ghost';
+                    e.mesh.material = ghostMat;
+                    e.health = 0;
                     knownUsers.delete(e.id); 
-                    scene.remove(e.mesh); 
-                    if (e.label) scene.remove(e.label);
-                    entities.splice(i, 1); 
                 }
             }
 
