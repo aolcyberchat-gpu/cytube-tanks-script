@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         CyTube BattleTanks — Deterministic /startgame + Ghost Movement
+// @name         CyTube BattleTanks — Deterministic /startgame with collisions
 // @namespace    http://www.cytu.be
 // @version      1.0.13
-// @description  Deterministic tanks/foes/food using /startgame <seed> on cytu.be rooms. Ghosts can move via chat commands /w /a /s /d.
+// @description  Deterministic tanks/foes/food using /startgame <seed> on cytu.be rooms, with collisions and wall bounces
 // @author       Guy McFurry III (adapted)
 // @match        https://cytu.be/r/BLOGUS
 // @grant        none
@@ -11,7 +11,8 @@
 (function () {
     'use strict';
 
-    async function loadThree(version = '0.158.0') {
+    // --- Load Three.js dynamically ---
+    function loadThree(version = '0.158.0') {
         return new Promise((resolve, reject) => {
             if (window.THREE) return resolve(window.THREE);
             const s = document.createElement('script');
@@ -48,7 +49,6 @@
     async function main() {
         await loadThree().catch(err => console.error("Failed to load Three.js", err));
 
-        // Canvas + renderer
         const canvas = document.createElement('canvas');
         canvas.style.position = 'fixed';
         canvas.style.top = '0';
@@ -78,7 +78,6 @@
             camera.updateProjectionMatrix();
         });
 
-        // Terrain
         const terrainGeo = new THREE.PlaneGeometry(100, 100, 60, 60);
         const loader = new THREE.TextureLoader();
         const terrainTex = loader.load('https://i.ibb.co/LBGxqDV/terrian-level-001.gif');
@@ -88,13 +87,11 @@
         scene.add(terrain);
         scene.add(new THREE.AmbientLight(0xffffff));
 
-        // Textures
         const userTex = loader.load('https://i.ibb.co/WQ9Py5J/Apu-Radio-Its-Over.webp');
         const foeTex = loader.load('https://i.ibb.co/MkG52QDN/Blogus-Foe.webp');
         const foodTex = loader.load('https://i.ibb.co/chvzwJhg/Food-Burger.webp');
         const ghostTex = loader.load('https://i.ibb.co/CKMC9K3v/ghost-user.gif');
 
-        // Materials
         const userMatGreen = new THREE.MeshBasicMaterial({ map: userTex, color: 0x00ff00 });
         const userMatYellow = new THREE.MeshBasicMaterial({ map: userTex, color: 0xffff00 });
         const userMatRed = new THREE.MeshBasicMaterial({ map: userTex, color: 0xff0000 });
@@ -117,7 +114,6 @@
                 } catch (err) {}
             }
             knownUsers.clear();
-            console.log(`[${new Date().toLocaleTimeString()}] cleared entities`);
         }
 
         let startgameCooldown = false;
@@ -127,50 +123,13 @@
         }
 
         function getSanitizedUsernames() {
-            try {
-                if (window.CLIENT && typeof window.CLIENT.getUserlist === "function") {
-                    const list = window.CLIENT.getUserlist();
-                    if (Array.isArray(list) && list.length > 0) {
-                        return list
-                            .map(u => (u && (u.name || u.username) ? (u.name || u.username).trim() : null))
-                            .filter(Boolean)
-                            .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-                    }
-                }
-            } catch (e) {
-                console.warn("CLIENT.getUserlist() not usable:", e);
-            }
-
             const usernames = [];
             const rows = document.querySelectorAll('#userlist .userlist_item');
-            if (rows && rows.length) {
-                for (const row of rows) {
-                    const span2 = row.querySelector('span:nth-of-type(2)');
-                    if (span2 && span2.textContent && span2.textContent.trim()) {
-                        usernames.push(span2.textContent.trim());
-                        continue;
-                    }
-                    const nameByClass = row.querySelector('.userlist_owner, .username, .user-name, .name');
-                    if (nameByClass && nameByClass.textContent && nameByClass.textContent.trim()) {
-                        usernames.push(nameByClass.textContent.trim());
-                        continue;
-                    }
-                    let fallback = null;
-                    for (const n of row.childNodes) {
-                        if (n.nodeType === Node.TEXT_NODE) {
-                            const t = n.textContent.trim();
-                            if (t) { fallback = t; break; }
-                        } else if (n.nodeType === Node.ELEMENT_NODE && n.childNodes.length === 1 && n.firstChild.nodeType === Node.TEXT_NODE) {
-                            const t = n.textContent.trim();
-                            if (t) { fallback = t; break; }
-                        }
-                    }
-                    if (fallback) usernames.push(fallback);
-                }
+            for (const row of rows) {
+                const span2 = row.querySelector('span:nth-of-type(2)');
+                if (span2 && span2.textContent) usernames.push(span2.textContent.trim());
             }
-            const cleaned = Array.from(new Set(usernames.filter(Boolean).map(s => s.trim())));
-            cleaned.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-            return cleaned;
+            return Array.from(new Set(usernames.filter(Boolean))).sort();
         }
 
         function createTextLabel(text) {
@@ -199,18 +158,18 @@
             setTimeout(() => (startgameCooldown = false), 500);
 
             const room = roomNameFromPath();
-            const combined = `(${room}:${seedWord})`;
+            const combined = `(${room}:){seedWord}`;
             currentGlobalSeedHex = await sha256Hex(combined);
             const seedInt = hexToSeedInt(currentGlobalSeedHex);
             globalPRNG = mulberry32(seedInt);
 
             clearEntities();
-
             const usernames = getSanitizedUsernames();
             const playerCount = Math.max(1, usernames.length);
             const foeCount = Math.max(4, Math.floor(playerCount * 1.0));
             const foodCount = Math.max(4, Math.floor(playerCount * 0.8));
 
+            // --- Spawn users ---
             for (let i = 0; i < playerCount; i++) {
                 const uname = usernames[i % usernames.length] || `player${i}`;
                 const perUserSeedHex = await sha256Hex(currentGlobalSeedHex + '::user::' + uname);
@@ -277,32 +236,13 @@
             }
         }
 
-        // --- Ghost movement handling ---
-        const ghostMoveRegex = /^\/([wasd])$/i;
-
-        function handleGhostMovement(user, cmd) {
-            const e = knownUsers.get(user);
-            if (!e || e.type !== 'ghost') return;
-            const step = 1;
-            switch(cmd.toLowerCase()) {
-                case 'w': e.mesh.position.z -= step; break;
-                case 's': e.mesh.position.z += step; break;
-                case 'a': e.mesh.position.x -= step; break;
-                case 'd': e.mesh.position.x += step; break;
-            }
-            console.log(`[GHOST MOVE] user="${user}" cmd="/${cmd}" x=${e.mesh.position.x.toFixed(2)} z=${e.mesh.position.z.toFixed(2)}`);
-        }
-
-        // --- Animation ---
         function animate() {
             requestAnimationFrame(animate);
 
             for (const e of entities) {
-                if (e.type !== 'ghost') {
-                    e.mesh.position.add(e.velocity);
-                    e.mesh.rotation.y += 0.01;
-                }
+                e.mesh.position.add(e.velocity);
 
+                // Update user health color
                 if (e.type === 'user') {
                     if (e.health >= 3) e.mesh.material = userMatGreen;
                     else if (e.health === 2) e.mesh.material = userMatYellow;
@@ -310,27 +250,56 @@
                 }
             }
 
+            // --- Pairwise collisions ---
+            for (let i = 0; i < entities.length; i++) {
+                for (let j = i + 1; j < entities.length; j++) {
+                    const A = entities[i], B = entities[j];
+                    if (A.type === 'ghost' || B.type === 'ghost') continue;
+
+                    const boxA = new THREE.Box3().setFromObject(A.mesh);
+                    const boxB = new THREE.Box3().setFromObject(B.mesh);
+                    if (!boxA.intersectsBox(boxB)) continue;
+
+                    const tmp = A.velocity.clone();
+                    A.velocity.copy(B.velocity);
+                    B.velocity.copy(tmp);
+
+                    if (A.type === 'user' && B.type === 'foe') { A.health -= 2; scene.remove(B.mesh); entities.splice(j, 1); j--; continue; }
+                    if (A.type === 'foe' && B.type === 'user') { B.health -= 2; scene.remove(A.mesh); entities.splice(i, 1); i--; break; }
+                    if (A.type === 'user' && B.type === 'food') { A.health += 1; scene.remove(B.mesh); entities.splice(j, 1); j--; continue; }
+                    if (A.type === 'food' && B.type === 'user') { B.health += 1; scene.remove(A.mesh); entities.splice(i, 1); i--; break; }
+                    if (A.type === 'user' && B.type === 'user') { A.health -= 1; B.health -= 1; }
+                }
+            }
+
+            // --- Terrain bounce ---
+            for (const e of entities) {
+                if (e.mesh.position.x > 49 || e.mesh.position.x < -49) e.velocity.x *= -1;
+                if (e.mesh.position.z > 49 || e.mesh.position.z < -49) e.velocity.z *= -1;
+            }
+
+            // --- Ghost conversion ---
+            for (let i = entities.length - 1; i >= 0; i--) {
+                const e = entities[i];
+                if (e.type === 'user' && e.health <= 0) { 
+                    e.type = 'ghost';
+                    e.mesh.material = ghostMat;
+                    e.health = 0;
+                    knownUsers.delete(e.id); 
+                }
+            }
+
             renderer.render(scene, camera);
         }
         animate();
 
-        // --- Chat command detection ---
         const startRegex = /^\/startgame\s+(.+)$/i;
-
-        function processCommandText(text, username) {
+        function processCommandText(text) {
             if (!text) return;
-
             const m = text.trim().match(startRegex);
-            if (m) {
-                const seed = m[1].trim();
-                spawnDeterministic(seed);
-            }
-
-            const ghostMatch = text.trim().match(ghostMoveRegex);
-            if (ghostMatch) {
-                const moveCmd = ghostMatch[1];
-                handleGhostMovement(username, moveCmd);
-            }
+            if (!m) return;
+            const seed = m[1].trim();
+            spawnDeterministic(seed);
         }
 
         if (window.socket && typeof window.socket.on === "function") {
@@ -338,15 +307,12 @@
             for (const ev of tryNames) {
                 try {
                     window.socket.on(ev, data => {
-                        let msg, user;
-                        if (data && typeof data === 'object') {
-                            msg = data.msg || data.message;
-                            user = data.username || data.user || data.name;
-                        } else if (typeof data === 'string') {
-                            msg = data;
-                            user = 'unknown';
-                        }
-                        processCommandText(msg, user);
+                        try {
+                            if (data && typeof data === 'object') {
+                                if (typeof data.msg === 'string') processCommandText(data.msg);
+                                else if (typeof data.message === 'string') processCommandText(data.message);
+                            } else if (typeof data === 'string') processCommandText(data);
+                        } catch (e) {}
                     });
                 } catch (e) {}
             }
@@ -357,10 +323,10 @@
                 for (const node of mut.addedNodes) {
                     if (!node) continue;
                     try {
-                        if (node.nodeType === Node.TEXT_NODE) processCommandText(node.textContent, 'unknown');
+                        if (node.nodeType === Node.TEXT_NODE) processCommandText(node.textContent);
                         else if (node.nodeType === Node.ELEMENT_NODE) {
                             const txt = (node.textContent || node.innerText || '').trim();
-                            processCommandText(txt, 'unknown');
+                            if (startRegex.test(txt)) processCommandText(txt);
                         }
                     } catch (e) {}
                 }
@@ -368,12 +334,7 @@
         });
         bodyObs.observe(document.body, { childList: true, subtree: true });
 
-        window.CBT_start = seed => {
-            if (!seed) return console.warn('Usage: CBT_start("seed")');
-            processCommandText(`/startgame ${seed}`, 'system');
-        };
-
-        console.log(`[${new Date().toLocaleTimeString()}] CyTube BattleTanks deterministic script loaded. Ghost movement via /w/a/s/d enabled.`);
+        window.CBT_start = seed => { if (!seed) return console.warn('Usage: CBT_start("seed")'); processCommandText(`/startgame ${seed}`); };
     }
 
     main().catch(err => console.error("BattleTanks init error", err));
