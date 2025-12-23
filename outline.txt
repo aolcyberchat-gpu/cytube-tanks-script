@@ -88,3 +88,14 @@ Rendering may interpolate, but simulation does not.
 - Potion
   Special deterministic trigger entity.
   Causes level transitions and private stimuli.
+
+## Level One: Ping-Pong Arena
+
+- Tanks, foes, and food spawn deterministically.
+- All entities bounce within bounded terrain.
+- Collisions affect health and entity removal.
+- When a tank’s health reaches zero:
+  - It becomes a ghost instead of disappearing.
+- Ghosts remain active participants.
+
+Level One ends when no tanks remain.
