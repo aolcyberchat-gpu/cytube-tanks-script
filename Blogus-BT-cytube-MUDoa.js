@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         CyTube BattleTanks — Deterministic /startgame with collisions
+// @name         CyTube BattleTanks — Deterministic Grid Movement
 // @namespace    http://www.cytu.be
-// @version      1.0.13
-// @description  Deterministic tanks/foes/food using /startgame <seed> on cytu.be rooms, with collisions and wall bounces
-// @author       Guy McFurry III (adapted)
+// @version      1.1.0
+// @description  Deterministic tanks/foes/food using /startgame <seed>, integer grid movement, collisions, ghosts
+// @author       Guy McFurry III
 // @match        https://cytu.be/r/BLOGUS
 // @grant        none
 // ==/UserScript==
@@ -11,7 +11,6 @@
 (function () {
     'use strict';
 
-    // --- Load Three.js dynamically ---
     function loadThree(version = '0.158.0') {
         return new Promise((resolve, reject) => {
             if (window.THREE) return resolve(window.THREE);
@@ -47,7 +46,13 @@
     }
 
     async function main() {
-        await loadThree().catch(err => console.error("Failed to load Three.js", err));
+        await loadThree();
+
+        /* =======================
+           GRID / WORLD CONSTANTS
+        ======================= */
+        const CELL_SIZE = 1.5;
+        const GRID_LIMIT = 32;
 
         const canvas = document.createElement('canvas');
         canvas.style.position = 'fixed';
@@ -78,15 +83,21 @@
             camera.updateProjectionMatrix();
         });
 
+        /* =======================
+           TERRAIN
+        ======================= */
         const terrainGeo = new THREE.PlaneGeometry(100, 100, 60, 60);
         const loader = new THREE.TextureLoader();
         const terrainTex = loader.load('https://i.ibb.co/LBGxqDV/terrian-level-001.gif');
-        const terrainMat = new THREE.MeshBasicMaterial({ map: terrainTex, wireframe: false });
+        const terrainMat = new THREE.MeshBasicMaterial({ map: terrainTex });
         const terrain = new THREE.Mesh(terrainGeo, terrainMat);
         terrain.rotation.x = -Math.PI / 2;
         scene.add(terrain);
         scene.add(new THREE.AmbientLight(0xffffff));
 
+        /* =======================
+           TEXTURES / MATERIALS
+        ======================= */
         const userTex = loader.load('https://i.ibb.co/WQ9Py5J/Apu-Radio-Its-Over.webp');
         const foeTex = loader.load('https://i.ibb.co/MkG52QDN/Blogus-Foe.webp');
         const foodTex = loader.load('https://i.ibb.co/chvzwJhg/Food-Burger.webp');
@@ -98,159 +109,142 @@
         const foeMat = new THREE.MeshBasicMaterial({ map: foeTex });
         const foodMat = new THREE.MeshBasicMaterial({ map: foodTex });
         const ghostMat = new THREE.MeshBasicMaterial({ map: ghostTex });
+
         const entityGeo = new THREE.BoxGeometry(2, 3, 2);
 
         const entities = [];
         const knownUsers = new Map();
-        let currentGlobalSeedHex = null;
-        let globalPRNG = null;
 
         function clearEntities() {
             while (entities.length) {
                 const e = entities.pop();
-                try { 
-                    scene.remove(e.mesh); 
-                    if (e.label) scene.remove(e.label);
-                } catch (err) {}
+                scene.remove(e.mesh);
             }
             knownUsers.clear();
         }
 
-        let startgameCooldown = false;
         function roomNameFromPath() {
-            const parts = (window.location.pathname || '').split('/');
+            const parts = window.location.pathname.split('/');
             return parts[parts.length - 1] || 'room';
         }
 
         function getSanitizedUsernames() {
-            const usernames = [];
-            const rows = document.querySelectorAll('#userlist .userlist_item');
-            for (const row of rows) {
-                const span2 = row.querySelector('span:nth-of-type(2)');
-                if (span2 && span2.textContent) usernames.push(span2.textContent.trim());
-            }
-            return Array.from(new Set(usernames.filter(Boolean))).sort();
+            const out = [];
+            document.querySelectorAll('#userlist .userlist_item span:nth-of-type(2)')
+                .forEach(s => s.textContent && out.push(s.textContent.trim()));
+            return Array.from(new Set(out)).sort();
         }
 
         function createTextLabel(text) {
-            const canvas = document.createElement('canvas');
-            const context = canvas.getContext('2d');
-            context.font = 'Bold 20px Arial';
-            const textWidth = context.measureText(text).width;
-            canvas.width = textWidth + 10;
-            canvas.height = 30;
-            context.fillStyle = 'rgba(0, 0, 0, 0.5)';
-            context.fillRect(0, 0, canvas.width, canvas.height);
-            context.fillStyle = 'white';
-            context.font = 'Bold 20px Arial';
-            context.fillText(text, 5, 20);
-            const texture = new THREE.Texture(canvas);
-            texture.needsUpdate = true;
-            const material = new THREE.SpriteMaterial({ map: texture });
-            const sprite = new THREE.Sprite(material);
-            sprite.scale.set(canvas.width / 10, canvas.height / 10, 1);
-            return sprite;
+            const c = document.createElement('canvas');
+            const ctx = c.getContext('2d');
+            ctx.font = 'bold 20px Arial';
+            c.width = ctx.measureText(text).width + 10;
+            c.height = 30;
+            ctx.fillStyle = 'rgba(0,0,0,0.5)';
+            ctx.fillRect(0, 0, c.width, c.height);
+            ctx.fillStyle = 'white';
+            ctx.fillText(text, 5, 20);
+            const tex = new THREE.Texture(c);
+            tex.needsUpdate = true;
+            const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex }));
+            spr.scale.set(c.width / 10, c.height / 10, 1);
+            return spr;
         }
 
         async function spawnDeterministic(seedWord) {
-            if (startgameCooldown) return;
-            startgameCooldown = true;
-            setTimeout(() => (startgameCooldown = false), 500);
+            clearEntities();
 
             const room = roomNameFromPath();
-            const combined = `(${room}:){seedWord}`;
-            currentGlobalSeedHex = await sha256Hex(combined);
-            const seedInt = hexToSeedInt(currentGlobalSeedHex);
-            globalPRNG = mulberry32(seedInt);
+            const globalSeedHex = await sha256Hex(`${room}:${seedWord}`);
+            const users = getSanitizedUsernames();
 
-            clearEntities();
-            const usernames = getSanitizedUsernames();
-            const playerCount = Math.max(1, usernames.length);
-            const foeCount = Math.max(4, Math.floor(playerCount * 1.0));
-            const foodCount = Math.max(4, Math.floor(playerCount * 0.8));
+            /* USERS */
+            for (const uname of users) {
+                const h = await sha256Hex(globalSeedHex + uname);
+                const pr = mulberry32(hexToSeedInt(h));
 
-            // --- Spawn users ---
-            for (let i = 0; i < playerCount; i++) {
-                const uname = usernames[i % usernames.length] || `player${i}`;
-                const perUserSeedHex = await sha256Hex(currentGlobalSeedHex + '::user::' + uname);
-                const perUserSeedInt = hexToSeedInt(perUserSeedHex);
-                const userPRNG = mulberry32(perUserSeedInt);
-
-                const ux = (userPRNG() - 0.5) * 80;
-                const uz = (userPRNG() - 0.5) * 80;
-                const uvx = (userPRNG() - 0.5) * 0.7;
-                const uvz = (userPRNG() - 0.5) * 0.7;
+                const gx = Math.round((pr() - 0.5) * GRID_LIMIT);
+                const gz = Math.round((pr() - 0.5) * GRID_LIMIT);
+                const dirX = pr() > 0.5 ? 1 : -1;
+                const dirZ = pr() > 0.5 ? 1 : -1;
 
                 const mesh = new THREE.Mesh(entityGeo, userMatGreen);
-                mesh.position.set(ux, 1, uz);
+                mesh.position.set(gx * CELL_SIZE, 1, gz * CELL_SIZE);
 
                 const label = createTextLabel(uname);
                 label.position.set(0, 4, 0);
                 mesh.add(label);
 
-                const ent = { 
-                    mesh, 
-                    label, 
-                    type: 'user', 
-                    id: uname, 
-                    velocity: new THREE.Vector3(uvx, 0, uvz), 
-                    health: 3 
+                const ent = {
+                    mesh,
+                    type: 'user',
+                    id: uname,
+                    gridX: gx,
+                    gridZ: gz,
+                    dirX,
+                    dirZ,
+                    health: 3
                 };
-                scene.add(mesh);
+
                 entities.push(ent);
                 knownUsers.set(uname, ent);
-            }
-
-            // --- Spawn foes ---
-            for (let i = 0; i < foeCount; i++) {
-                const foeSeedHex = await sha256Hex(currentGlobalSeedHex + `::foe::${i}`);
-                const foeSeedInt = hexToSeedInt(foeSeedHex);
-                const pr = mulberry32(foeSeedInt);
-
-                const x = (pr() - 0.5) * 80;
-                const z = (pr() - 0.5) * 80;
-                const vx = (pr() - 0.5) * 0.7;
-                const vz = (pr() - 0.5) * 0.7;
-
-                const mesh = new THREE.Mesh(entityGeo, foeMat);
-                mesh.position.set(x, 1, z);
-                entities.push({ mesh, type: 'foe', id: `foe${i}`, velocity: new THREE.Vector3(vx, 0, vz) });
                 scene.add(mesh);
             }
 
-            // --- Spawn food ---
-            for (let i = 0; i < foodCount; i++) {
-                const foodSeedHex = await sha256Hex(currentGlobalSeedHex + `::food::${i}`);
-                const foodSeedInt = hexToSeedInt(foodSeedHex);
-                const pr = mulberry32(foodSeedInt);
+            /* FOES + FOOD */
+            function spawnSet(type, count, mat) {
+                for (let i = 0; i < count; i++) {
+                    const h = mulberry32(hexToSeedInt(globalSeedHex + type + i));
+                    const gx = Math.round((h() - 0.5) * GRID_LIMIT);
+                    const gz = Math.round((h() - 0.5) * GRID_LIMIT);
+                    const dirX = h() > 0.5 ? 1 : -1;
+                    const dirZ = h() > 0.5 ? 1 : -1;
 
-                const x = (pr() - 0.5) * 80;
-                const z = (pr() - 0.5) * 80;
-                const vx = (pr() - 0.5) * 0.4;
-                const vz = (pr() - 0.5) * 0.4;
+                    const mesh = new THREE.Mesh(entityGeo, mat);
+                    mesh.position.set(gx * CELL_SIZE, 1, gz * CELL_SIZE);
 
-                const mesh = new THREE.Mesh(entityGeo, foodMat);
-                mesh.position.set(x, 1, z);
-                entities.push({ mesh, type: 'food', id: `food${i}`, velocity: new THREE.Vector3(vx, 0, vz) });
-                scene.add(mesh);
+                    entities.push({ mesh, type, gridX: gx, gridZ: gz, dirX, dirZ });
+                    scene.add(mesh);
+                }
             }
+
+            spawnSet('foe', Math.max(4, users.length), foeMat);
+            spawnSet('food', Math.max(4, Math.floor(users.length * 0.8)), foodMat);
         }
 
         function animate() {
             requestAnimationFrame(animate);
 
             for (const e of entities) {
-                e.mesh.position.add(e.velocity);
 
-                // Update user health color
+                if (e.type !== 'ghost') {
+                    e.gridX += e.dirX;
+                    e.gridZ += e.dirZ;
+                }
+
+                if (e.gridX >= GRID_LIMIT || e.gridX <= -GRID_LIMIT) {
+                    e.dirX *= -1;
+                    e.gridX += e.dirX;
+                }
+
+                if (e.gridZ >= GRID_LIMIT || e.gridZ <= -GRID_LIMIT) {
+                    e.dirZ *= -1;
+                    e.gridZ += e.dirZ;
+                }
+
+                e.mesh.position.x = e.gridX * CELL_SIZE;
+                e.mesh.position.z = e.gridZ * CELL_SIZE;
+
                 if (e.type === 'user') {
-                    if (e.health >= 3) e.mesh.material = userMatGreen;
-                    else if (e.health === 2) e.mesh.material = userMatYellow;
-                    else if (e.health === 1) e.mesh.material = userMatRed;
+                    e.mesh.material =
+                        e.health >= 3 ? userMatGreen :
+                        e.health === 2 ? userMatYellow :
+                        userMatRed;
                 }
             }
 
-            // --- Pairwise collisions ---
+            /* COLLISIONS */
             for (let i = 0; i < entities.length; i++) {
                 for (let j = i + 1; j < entities.length; j++) {
                     const A = entities[i], B = entities[j];
@@ -260,82 +254,39 @@
                     const boxB = new THREE.Box3().setFromObject(B.mesh);
                     if (!boxA.intersectsBox(boxB)) continue;
 
-                    const tmp = A.velocity.clone();
-                    A.velocity.copy(B.velocity);
-                    B.velocity.copy(tmp);
+                    [A.dirX, B.dirX] = [B.dirX, A.dirX];
+                    [A.dirZ, B.dirZ] = [B.dirZ, A.dirZ];
 
-                    if (A.type === 'user' && B.type === 'foe') { A.health -= 2; scene.remove(B.mesh); entities.splice(j, 1); j--; continue; }
-                    if (A.type === 'foe' && B.type === 'user') { B.health -= 2; scene.remove(A.mesh); entities.splice(i, 1); i--; break; }
-                    if (A.type === 'user' && B.type === 'food') { A.health += 1; scene.remove(B.mesh); entities.splice(j, 1); j--; continue; }
-                    if (A.type === 'food' && B.type === 'user') { B.health += 1; scene.remove(A.mesh); entities.splice(i, 1); i--; break; }
-                    if (A.type === 'user' && B.type === 'user') { A.health -= 1; B.health -= 1; }
+                    if (A.type === 'user' && B.type === 'foe') A.health -= 2;
+                    if (B.type === 'user' && A.type === 'foe') B.health -= 2;
+                    if (A.type === 'user' && B.type === 'food') A.health += 1;
+                    if (B.type === 'user' && A.type === 'food') B.health += 1;
+                    if (A.type === 'user' && B.type === 'user') { A.health--; B.health--; }
                 }
             }
 
-            // --- Terrain bounce ---
             for (const e of entities) {
-                if (e.mesh.position.x > 49 || e.mesh.position.x < -49) e.velocity.x *= -1;
-                if (e.mesh.position.z > 49 || e.mesh.position.z < -49) e.velocity.z *= -1;
-            }
-
-            // --- Ghost conversion ---
-            for (let i = entities.length - 1; i >= 0; i--) {
-                const e = entities[i];
-                if (e.type === 'user' && e.health <= 0) { 
+                if (e.type === 'user' && e.health <= 0) {
                     e.type = 'ghost';
                     e.mesh.material = ghostMat;
-                    e.health = 0;
-                    knownUsers.delete(e.id); 
                 }
             }
 
             renderer.render(scene, camera);
         }
+
         animate();
 
         const startRegex = /^\/startgame\s+(.+)$/i;
-        function processCommandText(text) {
-            if (!text) return;
-            const m = text.trim().match(startRegex);
-            if (!m) return;
-            const seed = m[1].trim();
-            spawnDeterministic(seed);
+        function handleChat(msg) {
+            const m = msg.match(startRegex);
+            if (m) spawnDeterministic(m[1].trim());
         }
 
-        if (window.socket && typeof window.socket.on === "function") {
-            const tryNames = ['chatMsg', 'chat message', 'chat message new', 'chat'];
-            for (const ev of tryNames) {
-                try {
-                    window.socket.on(ev, data => {
-                        try {
-                            if (data && typeof data === 'object') {
-                                if (typeof data.msg === 'string') processCommandText(data.msg);
-                                else if (typeof data.message === 'string') processCommandText(data.message);
-                            } else if (typeof data === 'string') processCommandText(data);
-                        } catch (e) {}
-                    });
-                } catch (e) {}
-            }
+        if (window.socket) {
+            window.socket.on('chatMsg', d => d.msg && handleChat(d.msg));
         }
-
-        const bodyObs = new MutationObserver(muts => {
-            for (const mut of muts) {
-                for (const node of mut.addedNodes) {
-                    if (!node) continue;
-                    try {
-                        if (node.nodeType === Node.TEXT_NODE) processCommandText(node.textContent);
-                        else if (node.nodeType === Node.ELEMENT_NODE) {
-                            const txt = (node.textContent || node.innerText || '').trim();
-                            if (startRegex.test(txt)) processCommandText(txt);
-                        }
-                    } catch (e) {}
-                }
-            }
-        });
-        bodyObs.observe(document.body, { childList: true, subtree: true });
-
-        window.CBT_start = seed => { if (!seed) return console.warn('Usage: CBT_start("seed")'); processCommandText(`/startgame ${seed}`); };
     }
 
-    main().catch(err => console.error("BattleTanks init error", err));
+    main();
 })();
