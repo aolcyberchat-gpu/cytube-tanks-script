@@ -1,0 +1,321 @@
+// ==UserScript==
+// @name         CyTube BattleTanks — Deterministic Integer Engine (Restored + Slowed + Fixed Timestep + Ghosts + Movement)
+// @namespace    http://www.cytu.be
+// @version      1.0.17
+// @description  Tanks, foes, food, username labels, integer movement, slowed ticks, fixed timestep simulation, ghosts on death, chat-controlled ghost movement after all tanks die
+// @match        https://cytu.be/r/BLOGUS
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    const FIXED_DELTA = 133.333; // Approximately 7.5 updates per second (1000 / 7.5)
+    let accumulator = 0;
+    let lastTime = performance.now();
+    let level = 1; // 1: Tank phase, 2: Ghost movement phase
+
+    /* ------------------ Three.js loader ------------------ */
+    function loadThree() {
+        return new Promise(resolve => {
+            if (window.THREE) return resolve();
+            const s = document.createElement('script');
+            s.src = 'https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js';
+            s.onload = resolve;
+            document.head.appendChild(s);
+        });
+    }
+
+    /* ------------------ Deterministic RNG ------------------ */
+    function mulberry32(a) {
+        return function () {
+            a |= 0;
+            a = a + 0x6D2B79F5 | 0;
+            let t = Math.imul(a ^ a >>> 15, 1 | a);
+            t ^= t + Math.imul(t ^ t >>> 7, 61 | t);
+            return ((t ^ t >>> 14) >>> 0) / 4294967296;
+        };
+    }
+
+    async function shaSeed(str) {
+        const buf = await crypto.subtle.digest(
+            'SHA-256',
+            new TextEncoder().encode(str)
+        );
+        return new Uint32Array(buf)[0];
+    }
+
+    /* ------------------ Username label ------------------ */
+    function makeLabel(name) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 256;
+        canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+
+        ctx.font = '28px monospace';
+        ctx.fillStyle = '#00ffcc';
+        ctx.textAlign = 'center';
+        ctx.fillText(name, 128, 40);
+
+        const tex = new THREE.CanvasTexture(canvas);
+        const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+        const sprite = new THREE.Sprite(mat);
+        sprite.scale.set(10, 2.5, 1);
+        sprite.position.y = 4;
+
+        return sprite;
+    }
+
+    /* ------------------ Main ------------------ */
+    async function main() {
+        await loadThree();
+
+        /* Renderer */
+        const canvas = document.createElement('canvas');
+        Object.assign(canvas.style, {
+            position: 'fixed',
+            inset: '0',
+            zIndex: '-1',
+            pointerEvents: 'none'
+        });
+        document.body.appendChild(canvas);
+
+        const renderer = new THREE.WebGLRenderer({ canvas, alpha: true });
+        renderer.setSize(innerWidth, innerHeight);
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 500);
+        camera.position.set(0, 30, 45);
+        camera.lookAt(0, 0, 0);
+
+        scene.add(new THREE.AmbientLight(0xffffff));
+
+        /* Terrain */
+        const terrain = new THREE.Mesh(
+            new THREE.PlaneGeometry(100, 100),
+            new THREE.MeshBasicMaterial({
+                map: new THREE.TextureLoader().load('https://i.ibb.co/LBGxqDV/terrian-level-001.gif')
+            })
+        );
+        terrain.rotation.x = -Math.PI / 2;
+        scene.add(terrain);
+
+        /* Textures and Materials */
+        const loader = new THREE.TextureLoader();
+        const tankTex = loader.load('https://i.ibb.co/WQ9Py5J/Apu-Radio-Its-Over.webp');
+        const foeTex = loader.load('https://i.ibb.co/MkG52QDN/Blogus-Foe.webp');
+        const foodTex = loader.load('https://i.ibb.co/chvzwJhg/Food-Burger.webp');
+        const ghostTex = loader.load('https://i.ibb.co/CKMC9K3/ghost-user.gif');
+
+        const tankMatGreen = new THREE.MeshBasicMaterial({ map: tankTex, color: 0x00ff00 });
+        const tankMatYellow = new THREE.MeshBasicMaterial({ map: tankTex, color: 0xffff00 });
+        const tankMatRed = new THREE.MeshBasicMaterial({ map: tankTex, color: 0xff0000 });
+        const foeMat = new THREE.MeshBasicMaterial({ map: foeTex });
+        const foodMat = new THREE.MeshBasicMaterial({ map: foodTex });
+        const ghostMat = new THREE.MeshBasicMaterial({ map: ghostTex });
+
+        const geo = new THREE.BoxGeometry(2, 3, 2);
+        const entities = [];
+
+        function spawnEntity(mat, rng, type, id, health = null, label = null) {
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.set(
+                Math.round((rng() - 0.5) * 80),
+                1,
+                Math.round((rng() - 0.5) * 80)
+            );
+
+            const velocity = new THREE.Vector3(
+                rng() > 0.5 ? 1 : -1,
+                0,
+                rng() > 0.5 ? 1 : -1
+            );
+
+            if (label) {
+                mesh.add(label);
+            }
+
+            scene.add(mesh);
+            entities.push({ mesh, velocity, type, id, health });
+        }
+
+        async function startGame(seedWord) {
+            entities.length = 0;
+            scene.children = scene.children.filter(o => o === terrain || o.type === 'AmbientLight');
+            level = 1;
+
+            const room = location.pathname.split('/').pop();
+            const baseSeed = await shaSeed(room + ':' + seedWord);
+
+            /* Users (Tanks) */
+            const names = [...document.querySelectorAll('#userlist .userlist_item span:nth-child(2)')]
+                .map(n => n.textContent.trim())
+                .filter(Boolean)
+                .sort();
+
+            names.forEach((name, i) => {
+                const rng = mulberry32(baseSeed + i);
+                const label = makeLabel(name);
+                spawnEntity(tankMatGreen, rng, 'tank', name, 3, label);
+            });
+
+            /* Foes */
+            for (let i = 0; i < 6; i++) {
+                const rng = mulberry32(baseSeed + 1000 + i);
+                spawnEntity(foeMat, rng, 'foe', `foe${i}`);
+            });
+
+            /* Food */
+            for (let i = 0; i < 8; i++) {
+                const rng = mulberry32(baseSeed + 2000 + i);
+                spawnEntity(foodMat, rng, 'food', `food${i}`);
+            }
+
+            // Reset timestep on game start for consistency
+            accumulator = 0;
+            lastTime = performance.now();
+        }
+
+        /* Resize handler */
+        window.addEventListener('resize', () => {
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+        });
+
+        /* ------------------ Animation ------------------ */
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const now = performance.now();
+            let delta = now - lastTime;
+            lastTime = now;
+            accumulator += delta;
+
+            while (accumulator >= FIXED_DELTA) {
+                // Update positions
+                for (const e of entities) {
+                    e.mesh.position.add(e.velocity);
+
+                    if (e.mesh.position.x > 49 || e.mesh.position.x < -49) e.velocity.x *= -1;
+                    if (e.mesh.position.z > 49 || e.mesh.position.z < -49) e.velocity.z *= -1;
+                }
+
+                // Collisions (only in level 1, skip ghosts)
+                for (let i = 0; i < entities.length; i++) {
+                    for (let j = i + 1; j < entities.length; j++) {
+                        const A = entities[i], B = entities[j];
+                        if (A.type === 'ghost' || B.type === 'ghost') continue;
+
+                        const boxA = new THREE.Box3().setFromObject(A.mesh);
+                        const boxB = new THREE.Box3().setFromObject(B.mesh);
+                        if (!boxA.intersectsBox(boxB)) continue;
+
+                        // Swap velocities
+                        const tmp = A.velocity.clone();
+                        A.velocity.copy(B.velocity);
+                        B.velocity.copy(tmp);
+
+                        // Interaction logic
+                        if (A.type === 'tank' && B.type === 'foe') {
+                            A.health -= 2;
+                            scene.remove(B.mesh);
+                            entities.splice(j, 1);
+                            j--;
+                            continue;
+                        }
+                        if (A.type === 'foe' && B.type === 'tank') {
+                            B.health -= 2;
+                            scene.remove(A.mesh);
+                            entities.splice(i, 1);
+                            i--;
+                            break;
+                        }
+                        if (A.type === 'tank' && B.type === 'food') {
+                            A.health += 1;
+                            scene.remove(B.mesh);
+                            entities.splice(j, 1);
+                            j--;
+                            continue;
+                        }
+                        if (A.type === 'food' && B.type === 'tank') {
+                            B.health += 1;
+                            scene.remove(A.mesh);
+                            entities.splice(i, 1);
+                            i--;
+                            break;
+                        }
+                        if (A.type === 'tank' && B.type === 'tank') {
+                            A.health -= 1;
+                            B.health -= 1;
+                        }
+                    }
+                }
+
+                // Update tank colors and check for ghost transformation
+                let allGhosts = true;
+                for (let i = entities.length - 1; i >= 0; i--) {
+                    const e = entities[i];
+                    if (e.type === 'tank') {
+                        allGhosts = false;
+                        if (e.health >= 3) {
+                            e.mesh.material = tankMatGreen;
+                        } else if (e.health === 2) {
+                            e.mesh.material = tankMatYellow;
+                        } else if (e.health === 1) {
+                            e.mesh.material = tankMatRed;
+                        }
+                        if (e.health <= 0) {
+                            e.type = 'ghost';
+                            e.mesh.material = ghostMat;
+                            e.health = 0;
+                        }
+                    }
+                }
+                if (allGhosts && level === 1) {
+                    level = 2;
+                    console.log('[BattleTanks] All tanks are ghosts. Entering Level 2: Ghost movement enabled.');
+                }
+
+                accumulator -= FIXED_DELTA;
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        /* Chat command listener */
+        window.socket?.on?.('chatMsg', data => {
+            const startMatch = data.msg?.match(/^\/startgame\s+(.+)/i);
+            if (startMatch) {
+                startGame(startMatch[1]);
+                return;
+            }
+
+            // Ghost movement commands (only in level 2)
+            if (level === 2 && data.username) {
+                const cmd = data.msg?.trim().toLowerCase();
+                if (['t', 'f', 'g', 'v'].includes(cmd)) {
+                    const ghost = entities.find(e => e.type === 'ghost' && e.id === data.username);
+                    if (ghost) {
+                        // Map commands to directions (assuming: t=north +z, f=west -x, g=south -z, v=east +x)
+                        let newVel;
+                        switch (cmd) {
+                            case 't': newVel = new THREE.Vector3(0, 0, 1); break;  // North (+z)
+                            case 'f': newVel = new THREE.Vector3(-1, 0, 0); break; // West (-x)
+                            case 'g': newVel = new THREE.Vector3(0, 0, -1); break; // South (-z)
+                            case 'v': newVel = new THREE.Vector3(1, 0, 0); break;  // East (+x)
+                        }
+                        ghost.velocity.copy(newVel);
+                        console.log(`[BattleTanks] Ghost \( {data.username} moved with command ' \){cmd}'`);
+                    }
+                }
+            }
+        });
+
+        console.log('[BattleTanks] Loaded with ghosts and chat-controlled movement.');
+    }
+
+    main();
+})();
