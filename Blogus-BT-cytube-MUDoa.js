@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         CyTube BattleTanks — Deterministic Integer Engine (Restored + Slowed)
+// @name         CyTube BattleTanks — Deterministic Integer Engine (Full Collisions + Ghosts)
 // @namespace    http://www.cytu.be
-// @version      1.0.15
-// @description  Tanks, foes, food, username labels, integer movement, slowed ticks
+// @version      1.0.16
+// @description  Tanks, foes, food, username labels, integer movement, slowed ticks, collisions, health, ghosts
 // @match        https://cytu.be/r/BLOGUS
 // @grant        none
 // ==/UserScript==
@@ -103,6 +103,7 @@
         const tankMat = new THREE.MeshBasicMaterial({ map: loader.load('https://i.ibb.co/WQ9Py5J/Apu-Radio-Its-Over.webp') });
         const foeMat  = new THREE.MeshBasicMaterial({ map: loader.load('https://i.ibb.co/MkG52QDN/Blogus-Foe.webp') });
         const foodMat = new THREE.MeshBasicMaterial({ map: loader.load('https://i.ibb.co/chvzwJhg/Food-Burger.webp') });
+        const ghostMat = new THREE.MeshBasicMaterial({ color: 0x888888 });
 
         const geo = new THREE.BoxGeometry(2, 3, 2);
         const entities = [];
@@ -121,18 +122,20 @@
                 rng() > 0.5 ? 1 : -1
             );
 
+            let health = type === 'tank' ? 3 : 0;
             if (name) {
                 const label = makeLabel(name);
                 mesh.add(label);
             }
 
             scene.add(mesh);
-            entities.push({ mesh, velocity, type });
+            entities.push({ mesh, velocity, type, health, id: name || null });
         }
 
         async function startGame(seedWord) {
+            // Remove all previous entities except terrain
+            entities.forEach(e => scene.remove(e.mesh));
             entities.length = 0;
-            scene.children = scene.children.filter(o => o === terrain || o.type === 'AmbientLight');
 
             const room = location.pathname.split('/').pop();
             const baseSeed = await shaSeed(room + ':' + seedWord);
@@ -165,12 +168,69 @@
             tickCounter++;
 
             if (tickCounter % MOVE_EVERY_N_TICKS === 0) {
-                for (const e of entities) {
-                    e.mesh.position.add(e.velocity);
+                // Move entities
+                entities.forEach(e => {
+                    if (e.type !== 'ghost' && e.type !== 'removed') {
+                        e.mesh.position.add(e.velocity);
 
-                    if (e.mesh.position.x > 49 || e.mesh.position.x < -49) e.velocity.x *= -1;
-                    if (e.mesh.position.z > 49 || e.mesh.position.z < -49) e.velocity.z *= -1;
+                        // Terrain bounce
+                        if (e.mesh.position.x > 49 || e.mesh.position.x < -49) e.velocity.x *= -1;
+                        if (e.mesh.position.z > 49 || e.mesh.position.z < -49) e.velocity.z *= -1;
+                    }
+                });
+
+                // Pairwise collisions & health
+                for (let i = 0; i < entities.length; i++) {
+                    const A = entities[i];
+                    if (A.type === 'ghost' || A.type === 'removed') continue;
+
+                    for (let j = i + 1; j < entities.length; j++) {
+                        const B = entities[j];
+                        if (B.type === 'ghost' || B.type === 'removed') continue;
+
+                        const dx = Math.abs(Math.round(A.mesh.position.x) - Math.round(B.mesh.position.x));
+                        const dz = Math.abs(Math.round(A.mesh.position.z) - Math.round(B.mesh.position.z));
+
+                        if (dx <= 2 && dz <= 2) { 
+                            // Swap velocities
+                            const tmp = A.velocity.clone();
+                            A.velocity.copy(B.velocity);
+                            B.velocity.copy(tmp);
+
+                            // Slight separation
+                            if (dx > 0) {
+                                const move = Math.sign(A.mesh.position.x - B.mesh.position.x);
+                                A.mesh.position.x += move;
+                                B.mesh.position.x -= move;
+                            }
+                            if (dz > 0) {
+                                const move = Math.sign(A.mesh.position.z - B.mesh.position.z);
+                                A.mesh.position.z += move;
+                                B.mesh.position.z -= move;
+                            }
+
+                            // Tank vs Tank
+                            if (A.type === 'tank' && B.type === 'tank') { A.health--; B.health--; }
+
+                            // Tank vs Foe
+                            if (A.type === 'tank' && B.type === 'foe') { A.health -= 2; B.type = 'removed'; B.mesh.visible = false; }
+                            if (B.type === 'tank' && A.type === 'foe') { B.health -= 2; A.type = 'removed'; A.mesh.visible = false; }
+
+                            // Tank vs Food
+                            if (A.type === 'tank' && B.type === 'food') { A.health++; B.type = 'removed'; B.mesh.visible = false; }
+                            if (B.type === 'tank' && A.type === 'food') { B.health++; A.type = 'removed'; A.mesh.visible = false; }
+                        }
+                    }
                 }
+
+                // Ghost conversion
+                entities.forEach(e => {
+                    if (e.type === 'tank' && e.health <= 0) {
+                        e.type = 'ghost';
+                        e.mesh.material = ghostMat;
+                        e.health = 0;
+                    }
+                });
             }
 
             renderer.render(scene, camera);
@@ -184,7 +244,7 @@
             if (m) startGame(m[1]);
         });
 
-        console.log('[BattleTanks] Fully restored, slowed, deterministic.');
+        console.log('[BattleTanks] Fully restored, slowed, integer, collisions, ghosts.');
     }
 
     main();
