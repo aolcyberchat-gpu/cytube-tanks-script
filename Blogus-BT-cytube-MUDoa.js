@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         CyTube BattleTanks — Ghost Chat Movement + Collisions
+// @name         CyTube BattleTanks — Ghost Spawnable Foes
 // @namespace    http://www.cytu.be
-// @version      1.0.16
-// @description  Tanks, foes, food, collisions, health, ghosts controlled via chat keys t,f,g,v
+// @version      1.0.17
+// @description  Tanks, foes, ghosts, collisions, chat movement, spawnable foes via /spawnfoe
 // @match        https://cytu.be/r/BLOGUS
 // @grant        none
 // ==/UserScript==
@@ -98,13 +98,15 @@
         const foeMat  = new THREE.MeshBasicMaterial({ map: loader.load('https://i.ibb.co/MkG52QDN/Blogus-Foe.webp') });
         const foodMat = new THREE.MeshBasicMaterial({ map: loader.load('https://i.ibb.co/chvzwJhg/Food-Burger.webp') });
         const ghostMat = new THREE.MeshBasicMaterial({ color: 0x888888, opacity: 0.7, transparent: true });
+        const spawnedFoeMat = new THREE.MeshBasicMaterial({ color: 0xff00ff });
 
         const geo = new THREE.BoxGeometry(2, 3, 2);
         const entities = [];
 
-        function spawnEntity(mat, rng, type, name = null) {
+        function spawnEntity(mat, rng, type, name = null, subType = null, position = null) {
             const mesh = new THREE.Mesh(geo, mat);
-            mesh.position.set(
+            if (position) mesh.position.copy(position);
+            else mesh.position.set(
                 Math.round((rng() - 0.5) * 80),
                 1,
                 Math.round((rng() - 0.5) * 80)
@@ -123,7 +125,7 @@
             }
 
             scene.add(mesh);
-            entities.push({ mesh, velocity, type, health: 3, id: name, label });
+            entities.push({ mesh, velocity, type, subType, health: 3, id: name, label });
         }
 
         async function startGame(seedWord) {
@@ -143,11 +145,10 @@
                 spawnEntity(tankMat, rng, 'tank', name);
             });
 
-            for (let i = 0; i < 6; i++) spawnEntity(foeMat, mulberry32(baseSeed + 1000 + i), 'foe');
+            for (let i = 0; i < 6; i++) spawnEntity(foeMat, mulberry32(baseSeed + 1000 + i), 'foe', null, 'blogus');
             for (let i = 0; i < 8; i++) spawnEntity(foodMat, mulberry32(baseSeed + 2000 + i), 'food');
         }
 
-        /* ------------------ Animation ------------------ */
         function animate() {
             requestAnimationFrame(animate);
             tickCounter++;
@@ -160,27 +161,43 @@
                     if (e.mesh.position.z > 49 || e.mesh.position.z < -49) e.velocity.z *= -1;
                 }
 
-                // Pairwise collisions
+                // Collisions
                 for (let i = 0; i < entities.length; i++) {
                     for (let j = i + 1; j < entities.length; j++) {
                         const A = entities[i], B = entities[j];
-                        if (A.type === 'ghost' || B.type === 'ghost') continue;
+                        if (A.type === 'ghost' && B.type === 'ghost') continue;
 
                         const boxA = new THREE.Box3().setFromObject(A.mesh);
                         const boxB = new THREE.Box3().setFromObject(B.mesh);
                         if (!boxA.intersectsBox(boxB)) continue;
 
-                        // Swap velocities
-                        const tmp = A.velocity.clone();
+                        // Handle collisions
+                        const swapVel = A.velocity.clone();
                         A.velocity.copy(B.velocity);
-                        B.velocity.copy(tmp);
+                        B.velocity.copy(swapVel);
 
-                        // Health adjustments
-                        if (A.type === 'tank' && B.type === 'foe') { A.health -= 2; scene.remove(B.mesh); entities.splice(j,1); j--; continue; }
-                        if (A.type === 'foe' && B.type === 'tank') { B.health -= 2; scene.remove(A.mesh); entities.splice(i,1); i--; break; }
-                        if (A.type === 'tank' && B.type === 'food') { A.health += 1; scene.remove(B.mesh); entities.splice(j,1); j--; continue; }
-                        if (A.type === 'food' && B.type === 'tank') { B.health += 1; scene.remove(A.mesh); entities.splice(i,1); i--; break; }
-                        if (A.type === 'tank' && B.type === 'tank') { A.health -= 1; B.health -= 1; }
+                        // Tank & Foe collisions
+                        if (A.type === 'tank' && B.type?.includes('foe')) { A.health -= 1; entities.splice(j,1); scene.remove(B.mesh); j--; continue; }
+                        if (B.type === 'tank' && A.type?.includes('foe')) { B.health -= 1; entities.splice(i,1); scene.remove(A.mesh); i--; break; }
+
+                        // Foe & Food
+                        if ((A.type?.includes('foe') && B.type === 'food') || (B.type?.includes('foe') && A.type === 'food')) {
+                            scene.remove(A.mesh); scene.remove(B.mesh);
+                            entities.splice(i,1); entities.splice(j>i?j-1:j,1); i--; break;
+                        }
+
+                        // Foe & Foe
+                        if (A.type?.includes('foe') && B.type?.includes('foe')) {
+                            scene.remove(A.mesh); scene.remove(B.mesh);
+                            entities.splice(i,1); entities.splice(j-1,1); i--; break;
+                        }
+
+                        // Tank & Food
+                        if (A.type==='tank' && B.type==='food') { A.health+=1; scene.remove(B.mesh); entities.splice(j,1); j--; continue; }
+                        if (B.type==='tank' && A.type==='food') { B.health+=1; scene.remove(A.mesh); entities.splice(i,1); i--; break; }
+
+                        // Tank & Tank
+                        if (A.type==='tank' && B.type==='tank') { A.health-=1; B.health-=1; }
                     }
                 }
 
@@ -206,13 +223,22 @@
 
             // Ghost movement
             const ghost = entities.find(e => e.type === 'ghost' && e.id?.trim().toLowerCase() === user?.trim().toLowerCase());
-            if (!ghost) return;
+            if (ghost) {
+                const speed = 1;
+                if (text.includes('t')) ghost.velocity.z = -speed;
+                if (text.includes('f')) ghost.velocity.z = speed;
+                if (text.includes('g')) ghost.velocity.x = -speed;
+                if (text.includes('v')) ghost.velocity.x = speed;
 
-            const speed = 1;
-            if (text.includes('t')) ghost.velocity.z = -speed;
-            if (text.includes('f')) ghost.velocity.z = speed;
-            if (text.includes('g')) ghost.velocity.x = -speed;
-            if (text.includes('v')) ghost.velocity.x = speed;
+                // Spawn foe
+                if (text.includes('/spawnfoe')) {
+                    const rng = mulberry32(Math.floor(Math.random()*999999));
+                    spawnEntity(spawnedFoeMat, rng, 'foe', null, 'spawned', ghost.mesh.position.clone());
+                }
+            }
+
+            const m = msg.match(/^\/startgame\s+(.+)/i);
+            if (m) startGame(m[1]);
         }
 
         if (window.socket && typeof window.socket.on === 'function') {
@@ -222,17 +248,13 @@
                     try {
                         const user = data.user || data.username;
                         const msg = data.msg || data.message || data;
-                        if (!msg) return;
                         handleChatMsg(user, msg);
-
-                        const m = msg.match(/^\/startgame\s+(.+)/i);
-                        if (m) startGame(m[1]);
                     } catch(e){}
                 });
             });
         }
 
-        console.log('[BattleTanks] Ghost chat movement enabled, collisions intact.');
+        console.log('[BattleTanks] Ghosts can now spawn foes with /spawnfoe, collisions and health intact.');
     }
 
     main();
