@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         CyTube BattleTanks — Deterministic Integer Engine (Full Collisions + Ghosts)
+// @name         CyTube BattleTanks — Ghost Chat Movement + Collisions
 // @namespace    http://www.cytu.be
 // @version      1.0.16
-// @description  Tanks, foes, food, username labels, integer movement, slowed ticks, collisions, health, ghosts
+// @description  Tanks, foes, food, collisions, health, ghosts controlled via chat keys t,f,g,v
 // @match        https://cytu.be/r/BLOGUS
 // @grant        none
 // ==/UserScript==
@@ -10,7 +10,7 @@
 (function () {
     'use strict';
 
-    const MOVE_EVERY_N_TICKS = 8; // speed control
+    const MOVE_EVERY_N_TICKS = 8;
     let tickCounter = 0;
 
     /* ------------------ Three.js loader ------------------ */
@@ -49,18 +49,15 @@
         canvas.width = 256;
         canvas.height = 64;
         const ctx = canvas.getContext('2d');
-
         ctx.font = '28px monospace';
         ctx.fillStyle = '#00ffcc';
         ctx.textAlign = 'center';
         ctx.fillText(name, 128, 40);
-
         const tex = new THREE.CanvasTexture(canvas);
         const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
         const sprite = new THREE.Sprite(mat);
         sprite.scale.set(10, 2.5, 1);
         sprite.position.y = 4;
-
         return sprite;
     }
 
@@ -68,7 +65,6 @@
     async function main() {
         await loadThree();
 
-        /* Renderer */
         const canvas = document.createElement('canvas');
         Object.assign(canvas.style, {
             position: 'fixed',
@@ -88,7 +84,6 @@
 
         scene.add(new THREE.AmbientLight(0xffffff));
 
-        /* Terrain */
         const terrain = new THREE.Mesh(
             new THREE.PlaneGeometry(100, 100),
             new THREE.MeshBasicMaterial({
@@ -98,12 +93,11 @@
         terrain.rotation.x = -Math.PI / 2;
         scene.add(terrain);
 
-        /* Textures */
         const loader = new THREE.TextureLoader();
         const tankMat = new THREE.MeshBasicMaterial({ map: loader.load('https://i.ibb.co/WQ9Py5J/Apu-Radio-Its-Over.webp') });
         const foeMat  = new THREE.MeshBasicMaterial({ map: loader.load('https://i.ibb.co/MkG52QDN/Blogus-Foe.webp') });
         const foodMat = new THREE.MeshBasicMaterial({ map: loader.load('https://i.ibb.co/chvzwJhg/Food-Burger.webp') });
-        const ghostMat = new THREE.MeshBasicMaterial({ color: 0x888888 });
+        const ghostMat = new THREE.MeshBasicMaterial({ color: 0x888888, opacity: 0.7, transparent: true });
 
         const geo = new THREE.BoxGeometry(2, 3, 2);
         const entities = [];
@@ -122,25 +116,23 @@
                 rng() > 0.5 ? 1 : -1
             );
 
-            let health = type === 'tank' ? 3 : 0;
+            let label = null;
             if (name) {
-                const label = makeLabel(name);
+                label = makeLabel(name);
                 mesh.add(label);
             }
 
             scene.add(mesh);
-            entities.push({ mesh, velocity, type, health, id: name || null });
+            entities.push({ mesh, velocity, type, health: 3, id: name, label });
         }
 
         async function startGame(seedWord) {
-            // Remove all previous entities except terrain
             entities.forEach(e => scene.remove(e.mesh));
             entities.length = 0;
 
             const room = location.pathname.split('/').pop();
             const baseSeed = await shaSeed(room + ':' + seedWord);
 
-            /* Users */
             const names = [...document.querySelectorAll('#userlist .userlist_item span:nth-child(2)')]
                 .map(n => n.textContent.trim())
                 .filter(Boolean)
@@ -151,15 +143,8 @@
                 spawnEntity(tankMat, rng, 'tank', name);
             });
 
-            /* Foes */
-            for (let i = 0; i < 6; i++) {
-                spawnEntity(foeMat, mulberry32(baseSeed + 1000 + i), 'foe');
-            }
-
-            /* Food */
-            for (let i = 0; i < 8; i++) {
-                spawnEntity(foodMat, mulberry32(baseSeed + 2000 + i), 'food');
-            }
+            for (let i = 0; i < 6; i++) spawnEntity(foeMat, mulberry32(baseSeed + 1000 + i), 'foe');
+            for (let i = 0; i < 8; i++) spawnEntity(foodMat, mulberry32(baseSeed + 2000 + i), 'food');
         }
 
         /* ------------------ Animation ------------------ */
@@ -168,69 +153,45 @@
             tickCounter++;
 
             if (tickCounter % MOVE_EVERY_N_TICKS === 0) {
-                // Move entities
-                entities.forEach(e => {
-                    if (e.type !== 'ghost' && e.type !== 'removed') {
-                        e.mesh.position.add(e.velocity);
+                for (const e of entities) {
+                    e.mesh.position.add(e.velocity);
 
-                        // Terrain bounce
-                        if (e.mesh.position.x > 49 || e.mesh.position.x < -49) e.velocity.x *= -1;
-                        if (e.mesh.position.z > 49 || e.mesh.position.z < -49) e.velocity.z *= -1;
-                    }
-                });
+                    if (e.mesh.position.x > 49 || e.mesh.position.x < -49) e.velocity.x *= -1;
+                    if (e.mesh.position.z > 49 || e.mesh.position.z < -49) e.velocity.z *= -1;
+                }
 
-                // Pairwise collisions & health
+                // Pairwise collisions
                 for (let i = 0; i < entities.length; i++) {
-                    const A = entities[i];
-                    if (A.type === 'ghost' || A.type === 'removed') continue;
-
                     for (let j = i + 1; j < entities.length; j++) {
-                        const B = entities[j];
-                        if (B.type === 'ghost' || B.type === 'removed') continue;
+                        const A = entities[i], B = entities[j];
+                        if (A.type === 'ghost' || B.type === 'ghost') continue;
 
-                        const dx = Math.abs(Math.round(A.mesh.position.x) - Math.round(B.mesh.position.x));
-                        const dz = Math.abs(Math.round(A.mesh.position.z) - Math.round(B.mesh.position.z));
+                        const boxA = new THREE.Box3().setFromObject(A.mesh);
+                        const boxB = new THREE.Box3().setFromObject(B.mesh);
+                        if (!boxA.intersectsBox(boxB)) continue;
 
-                        if (dx <= 2 && dz <= 2) { 
-                            // Swap velocities
-                            const tmp = A.velocity.clone();
-                            A.velocity.copy(B.velocity);
-                            B.velocity.copy(tmp);
+                        // Swap velocities
+                        const tmp = A.velocity.clone();
+                        A.velocity.copy(B.velocity);
+                        B.velocity.copy(tmp);
 
-                            // Slight separation
-                            if (dx > 0) {
-                                const move = Math.sign(A.mesh.position.x - B.mesh.position.x);
-                                A.mesh.position.x += move;
-                                B.mesh.position.x -= move;
-                            }
-                            if (dz > 0) {
-                                const move = Math.sign(A.mesh.position.z - B.mesh.position.z);
-                                A.mesh.position.z += move;
-                                B.mesh.position.z -= move;
-                            }
-
-                            // Tank vs Tank
-                            if (A.type === 'tank' && B.type === 'tank') { A.health--; B.health--; }
-
-                            // Tank vs Foe
-                            if (A.type === 'tank' && B.type === 'foe') { A.health -= 2; B.type = 'removed'; B.mesh.visible = false; }
-                            if (B.type === 'tank' && A.type === 'foe') { B.health -= 2; A.type = 'removed'; A.mesh.visible = false; }
-
-                            // Tank vs Food
-                            if (A.type === 'tank' && B.type === 'food') { A.health++; B.type = 'removed'; B.mesh.visible = false; }
-                            if (B.type === 'tank' && A.type === 'food') { B.health++; A.type = 'removed'; A.mesh.visible = false; }
-                        }
+                        // Health adjustments
+                        if (A.type === 'tank' && B.type === 'foe') { A.health -= 2; scene.remove(B.mesh); entities.splice(j,1); j--; continue; }
+                        if (A.type === 'foe' && B.type === 'tank') { B.health -= 2; scene.remove(A.mesh); entities.splice(i,1); i--; break; }
+                        if (A.type === 'tank' && B.type === 'food') { A.health += 1; scene.remove(B.mesh); entities.splice(j,1); j--; continue; }
+                        if (A.type === 'food' && B.type === 'tank') { B.health += 1; scene.remove(A.mesh); entities.splice(i,1); i--; break; }
+                        if (A.type === 'tank' && B.type === 'tank') { A.health -= 1; B.health -= 1; }
                     }
                 }
 
                 // Ghost conversion
-                entities.forEach(e => {
+                for (let e of entities) {
                     if (e.type === 'tank' && e.health <= 0) {
                         e.type = 'ghost';
                         e.mesh.material = ghostMat;
                         e.health = 0;
                     }
-                });
+                }
             }
 
             renderer.render(scene, camera);
@@ -238,13 +199,40 @@
 
         animate();
 
-        /* Chat command */
-        window.socket?.on?.('chatMsg', data => {
-            const m = data.msg?.match(/^\/startgame\s+(.+)/i);
-            if (m) startGame(m[1]);
-        });
+        /* ------------------ Chat commands ------------------ */
+        function handleChatMsg(user, msg) {
+            if (!msg) return;
+            const text = msg.trim().toLowerCase();
 
-        console.log('[BattleTanks] Fully restored, slowed, integer, collisions, ghosts.');
+            // Ghost movement
+            const ghost = entities.find(e => e.type === 'ghost' && e.id?.trim().toLowerCase() === user?.trim().toLowerCase());
+            if (!ghost) return;
+
+            const speed = 1;
+            if (text.includes('t')) ghost.velocity.z = -speed;
+            if (text.includes('f')) ghost.velocity.z = speed;
+            if (text.includes('g')) ghost.velocity.x = -speed;
+            if (text.includes('v')) ghost.velocity.x = speed;
+        }
+
+        if (window.socket && typeof window.socket.on === 'function') {
+            const tryEvents = ['chatMsg', 'chat message', 'chat message new', 'chat'];
+            tryEvents.forEach(ev => {
+                window.socket.on(ev, data => {
+                    try {
+                        const user = data.user || data.username;
+                        const msg = data.msg || data.message || data;
+                        if (!msg) return;
+                        handleChatMsg(user, msg);
+
+                        const m = msg.match(/^\/startgame\s+(.+)/i);
+                        if (m) startGame(m[1]);
+                    } catch(e){}
+                });
+            });
+        }
+
+        console.log('[BattleTanks] Ghost chat movement enabled, collisions intact.');
     }
 
     main();
