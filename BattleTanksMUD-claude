@@ -1,0 +1,1133 @@
+// ==UserScript==
+// @name         CyTube BattleTanks MUD - Complete
+// @namespace    http://www.cytu.be
+// @version      2.0.0
+// @description  Turn-based MUD/D&D style multiplayer game in Cytube
+// @match        https://cytu.be/r/BLOGUS
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    const TICK_DIVISOR = 10;
+    const WORLD_MIN = -48;
+    const WORLD_MAX = 48;
+    const COLLISION_DISTANCE = 2;
+    const ENTITY_SIZE = 2;
+    const GHOST_SPEED = 0.8;
+    const ACTION_REFRESH_TICKS = 500; // ~5 seconds
+
+    let tick = 0;
+    let entities = [];
+    let scene, camera, renderer;
+    let materials = {};
+    let terrain;
+    let currentSeed = 0;
+    let foeCounter = 0;
+    let localPlayerName = null;
+    let gameStarted = false;
+
+    // World events timeline
+    const WORLD_EVENTS = [
+        { tick: 500, event: 'fog_descends', description: '🌫️ A thick fog rolls across the battlefield...' },
+        { tick: 1000, event: 'boss_spawn', description: '💀 THE DEMON LORD RISES FROM THE DEPTHS! 💀' },
+        { tick: 1500, event: 'treasure_rain', description: '✨ Ancient treasures rain from the sky! ✨' },
+        { tick: 2000, event: 'heal_fountain', description: '⛲ A magical fountain appears, healing all nearby!' },
+        { tick: 2500, event: 'speed_boost', description: '⚡ Lightning strikes, empowering all warriors!' },
+    ];
+
+    // Loot table with rarities
+    const LOOT_TABLE = [
+        { name: 'Health Potion', type: 'consumable', heal: 2, rarity: 0.5, emoji: '🧪' },
+        { name: 'Iron Sword', type: 'weapon', attack: 2, rarity: 0.4, emoji: '⚔️' },
+        { name: 'Steel Armor', type: 'armor', defense: 2, rarity: 0.3, emoji: '🛡️' },
+        { name: 'Speed Boots', type: 'accessory', speedBoost: 0.5, rarity: 0.2, emoji: '👢' },
+        { name: 'Diamond Sword', type: 'weapon', attack: 4, rarity: 0.15, emoji: '💎' },
+        { name: 'Dragon Armor', type: 'armor', defense: 4, rarity: 0.1, emoji: '🐉' },
+        { name: 'Legendary Axe', type: 'weapon', attack: 6, rarity: 0.05, emoji: '🪓' },
+        { name: 'Phoenix Feather', type: 'consumable', revive: true, rarity: 0.02, emoji: '🔥' },
+    ];
+
+    /* ---------------- RNG ---------------- */
+
+    function mulberry32(a) {
+        return function () {
+            a |= 0;
+            a = a + 0x6D2B79F5 | 0;
+            let t = Math.imul(a ^ a >>> 15, 1 | a);
+            t ^= t + Math.imul(t ^ t >>> 7, 61 | t);
+            return ((t ^ t >>> 14) >>> 0) / 4294967296;
+        };
+    }
+
+    async function shaSeed(str) {
+        const buf = await crypto.subtle.digest(
+            'SHA-256',
+            new TextEncoder().encode(str)
+        );
+        return new Uint32Array(buf)[0];
+    }
+
+    function hashString(str) {
+        let hash = 0;
+        for (let i = 0; i < str.length; i++) {
+            hash = ((hash << 5) - hash) + str.charCodeAt(i);
+            hash = hash & hash;
+        }
+        return Math.abs(hash);
+    }
+
+    /* ---------------- Three.js ---------------- */
+
+    function loadThree() {
+        return new Promise(resolve => {
+            if (window.THREE) return resolve();
+            const s = document.createElement('script');
+            s.src = 'https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js';
+            s.onload = resolve;
+            s.onerror = () => {
+                console.error('[BattleTanks] Failed to load Three.js');
+                resolve();
+            };
+            document.head.appendChild(s);
+        });
+    }
+
+    /* ---------------- Label ---------------- */
+
+    function makeLabel(text, color = '#ffffff', subtitle = '') {
+        const canvas = document.createElement('canvas');
+        canvas.width = 256;
+        canvas.height = 96;
+        const ctx = canvas.getContext('2d');
+
+        ctx.font = 'bold 28px monospace';
+        ctx.fillStyle = color;
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 4;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        
+        ctx.strokeText(text, 128, 32);
+        ctx.fillText(text, 128, 32);
+
+        if (subtitle) {
+            ctx.font = 'bold 20px monospace';
+            ctx.strokeText(subtitle, 128, 64);
+            ctx.fillText(subtitle, 128, 64);
+        }
+
+        const tex = new THREE.CanvasTexture(canvas);
+        const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+        const sprite = new THREE.Sprite(mat);
+        sprite.scale.set(12, 4, 1);
+        sprite.position.y = 4;
+        return sprite;
+    }
+
+    function getPlayerColor(name, seed) {
+        const crtColors = [
+            '#00FF00', '#FFAA00', '#FFFF00', '#FF00FF',
+            '#00FFFF', '#FFFFFF', '#5555FF', '#FFD700',
+            '#FF6600', '#00FF88',
+        ];
+        
+        const rng = mulberry32(seed + hashString(name));
+        const index = Math.floor(rng() * crtColors.length);
+        return crtColors[index];
+    }
+
+    /* ---------------- Entity ---------------- */
+
+    function createEntity(type, mat, x, z, rng, name = null, color = null, level = 1) {
+        const mesh = new THREE.Mesh(
+            new THREE.BoxGeometry(ENTITY_SIZE, 3, ENTITY_SIZE),
+            mat
+        );
+        mesh.position.set(x, 1.5, z);
+        scene.add(mesh);
+
+        let label = null;
+        if (name) {
+            const subtitle = type === 'tank' ? 'HP: 3/3 | AP: 3' : '';
+            label = makeLabel(name, color, subtitle);
+            mesh.add(label);
+        }
+
+        const isBoss = type === 'boss';
+        const speed = type === 'foe' ? 1.5 : (isBoss ? 0.8 : 1);
+        const maxHp = type === 'tank' ? 3 : (isBoss ? 20 : 1);
+        
+        return {
+            type,
+            mesh,
+            label,
+            labelColor: color,
+            name,
+            hp: maxHp,
+            maxHp: maxHp,
+            stats: {
+                attack: isBoss ? 3 : 1,
+                defense: 0,
+                speed: speed,
+                xp: 0,
+                level: level,
+                gold: 0
+            },
+            inventory: [],
+            equipment: {
+                weapon: null,
+                armor: null,
+                accessory: null
+            },
+            buffs: [],
+            defending: false,
+            actionPoints: type === 'tank' ? 3 : 0,
+            ghost: false,
+            vx: (rng() > 0.5 ? 1 : -1) * speed,
+            vz: (rng() > 0.5 ? 1 : -1) * speed
+        };
+    }
+
+    /* ---------------- Collision ---------------- */
+
+    function collide(a, b) {
+        const dx = a.mesh.position.x - b.mesh.position.x;
+        const dz = a.mesh.position.z - b.mesh.position.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        return dist < COLLISION_DISTANCE;
+    }
+
+    function bounce(a, b) {
+        [a.vx, b.vx] = [b.vx, a.vx];
+        [a.vz, b.vz] = [b.vz, a.vz];
+        
+        const dx = a.mesh.position.x - b.mesh.position.x;
+        const dz = a.mesh.position.z - b.mesh.position.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        
+        if (dist > 0) {
+            const overlap = COLLISION_DISTANCE - dist;
+            const nx = dx / dist;
+            const nz = dz / dist;
+            
+            a.mesh.position.x += nx * overlap * 0.5;
+            a.mesh.position.z += nz * overlap * 0.5;
+            b.mesh.position.x -= nx * overlap * 0.5;
+            b.mesh.position.z -= nz * overlap * 0.5;
+        }
+    }
+
+    /* ---------------- Visual Effects ---------------- */
+
+    function createParticleEffect(position, color, count = 15) {
+        const geometry = new THREE.BufferGeometry();
+        const positions = [];
+        const velocities = [];
+        
+        for (let i = 0; i < count; i++) {
+            positions.push(position.x, position.y, position.z);
+            velocities.push(
+                (Math.random() - 0.5) * 2,
+                Math.random() * 2 + 1,
+                (Math.random() - 0.5) * 2
+            );
+        }
+        
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        
+        const material = new THREE.PointsMaterial({
+            color: color,
+            size: 0.5,
+            transparent: true
+        });
+        
+        const particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+        
+        let life = 0;
+        const animateParticles = () => {
+            life++;
+            const pos = particles.geometry.attributes.position.array;
+            
+            for (let i = 0; i < count; i++) {
+                pos[i * 3] += velocities[i * 3] * 0.1;
+                pos[i * 3 + 1] += velocities[i * 3 + 1] * 0.1;
+                pos[i * 3 + 2] += velocities[i * 3 + 2] * 0.1;
+                velocities[i * 3 + 1] -= 0.05;
+            }
+            
+            particles.geometry.attributes.position.needsUpdate = true;
+            particles.material.opacity = 1 - (life / 60);
+            
+            if (life < 60) {
+                requestAnimationFrame(animateParticles);
+            } else {
+                scene.remove(particles);
+                particles.geometry.dispose();
+                particles.material.dispose();
+            }
+        };
+        animateParticles();
+    }
+
+    function createDamageNumbers(position, damage, color) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 128;
+        canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+        
+        ctx.font = 'bold 48px monospace';
+        ctx.fillStyle = color;
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 3;
+        ctx.textAlign = 'center';
+        ctx.strokeText(`-${damage}`, 64, 48);
+        ctx.fillText(`-${damage}`, 64, 48);
+        
+        const texture = new THREE.CanvasTexture(canvas);
+        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ 
+            map: texture, 
+            transparent: true 
+        }));
+        
+        sprite.position.copy(position);
+        sprite.position.y += 5;
+        sprite.scale.set(4, 2, 1);
+        scene.add(sprite);
+        
+        let life = 0;
+        const animateDamage = () => {
+            life++;
+            sprite.position.y += 0.1;
+            sprite.material.opacity = 1 - (life / 60);
+            
+            if (life < 60) {
+                requestAnimationFrame(animateDamage);
+            } else {
+                scene.remove(sprite);
+                sprite.material.map.dispose();
+                sprite.material.dispose();
+            }
+        };
+        animateDamage();
+    }
+
+    /* ---------------- Combat System ---------------- */
+
+    function handleAttack(attackerName, targetIdentifier) {
+        const attacker = entities.find(e => e.name === attackerName && !e.ghost);
+        if (!attacker) {
+            broadcastToChat(`❌ ${attackerName} is not alive or doesn't exist!`);
+            return;
+        }
+        
+        if (attacker.actionPoints < 1) {
+            broadcastToChat(`⚠️ ${attackerName} has no action points left!`);
+            return;
+        }
+
+        let target;
+        if (targetIdentifier.toLowerCase() === 'foe' || targetIdentifier.toLowerCase() === 'enemy') {
+            const foes = entities.filter(e => (e.type === 'foe' || e.type === 'boss') && !e.ghost);
+            if (foes.length === 0) {
+                broadcastToChat(`❌ No enemies to attack!`);
+                return;
+            }
+            // Find closest foe
+            let closestDist = Infinity;
+            for (const f of foes) {
+                const dx = f.mesh.position.x - attacker.mesh.position.x;
+                const dz = f.mesh.position.z - attacker.mesh.position.z;
+                const dist = Math.sqrt(dx * dx + dz * dz);
+                if (dist < closestDist) {
+                    closestDist = dist;
+                    target = f;
+                }
+            }
+        } else {
+            target = entities.find(e => e.name === targetIdentifier && !e.ghost);
+        }
+
+        if (!target) {
+            broadcastToChat(`❌ Target not found: ${targetIdentifier}`);
+            return;
+        }
+        
+        attacker.actionPoints--;
+        
+        const combatRng = mulberry32(currentSeed + tick + hashString(attackerName + (target.name || 'foe')));
+        const attackRoll = Math.floor(combatRng() * 20) + 1;
+        
+        const weaponBonus = attacker.equipment.weapon ? attacker.equipment.weapon.attack : 0;
+        const damage = attacker.stats.attack + weaponBonus + Math.floor(combatRng() * 6);
+        
+        const armorBonus = target.equipment?.armor ? target.equipment.armor.defense : 0;
+        const defense = (target.defending ? target.stats.defense + 2 : target.stats.defense) + armorBonus;
+        const finalDamage = Math.max(1, damage - defense);
+        
+        createParticleEffect(target.mesh.position, 0xff0000);
+        
+        if (attackRoll === 20) {
+            target.hp -= finalDamage * 2;
+            broadcastToChat(`🎯 CRITICAL HIT! ${attackerName} deals ${finalDamage * 2} damage to ${target.name || 'enemy'}!`);
+            createDamageNumbers(target.mesh.position, finalDamage * 2, '#ff0000');
+        } else if (attackRoll === 1) {
+            broadcastToChat(`💥 FUMBLE! ${attackerName}'s attack misses completely!`);
+        } else {
+            target.hp -= finalDamage;
+            const targetName = target.name || (target.type === 'boss' ? 'DEMON LORD' : 'enemy');
+            broadcastToChat(`⚔️ ${attackerName} attacks ${targetName} for ${finalDamage} damage! (Roll: ${attackRoll})`);
+            createDamageNumbers(target.mesh.position, finalDamage, '#ffffff');
+        }
+        
+        if (target.hp <= 0 && (target.type === 'foe' || target.type === 'boss')) {
+            const xpGain = target.type === 'boss' ? 100 : (10 * target.stats.level);
+            const goldGain = target.type === 'boss' ? 50 : Math.floor(combatRng() * 10) + 5;
+            attacker.stats.xp += xpGain;
+            attacker.stats.gold += goldGain;
+            broadcastToChat(`💰 ${attackerName} gains ${xpGain} XP and ${goldGain} gold!`);
+            checkLevelUp(attacker);
+            
+            if (combatRng() < 0.4) {
+                const loot = deterministicLootDrop(combatRng);
+                attacker.inventory.push(loot);
+                broadcastToChat(`📦 ${attackerName} found ${loot.emoji} ${loot.name}!`);
+            }
+        }
+        
+        updateLabel(attacker);
+        if (target.label) updateLabel(target);
+    }
+
+    function handleDefend(username) {
+        const player = entities.find(e => e.name === username && !e.ghost);
+        if (!player) return;
+        
+        if (player.actionPoints < 1) {
+            broadcastToChat(`⚠️ ${username} has no action points left!`);
+            return;
+        }
+        
+        player.actionPoints--;
+        player.defending = true;
+        createParticleEffect(player.mesh.position, 0x0000ff);
+        broadcastToChat(`🛡️ ${username} takes a defensive stance! (+2 defense until next turn)`);
+        updateLabel(player);
+    }
+
+    function handleHeal(healerName, targetName) {
+        const healer = entities.find(e => e.name === healerName && !e.ghost);
+        const target = entities.find(e => e.name === targetName && !e.ghost);
+        
+        if (!healer || !target) return;
+        
+        const potion = healer.inventory.find(i => i.type === 'consumable' && i.heal);
+        if (!potion) {
+            broadcastToChat(`❌ ${healerName} has no healing items!`);
+            return;
+        }
+        
+        healer.inventory = healer.inventory.filter(i => i !== potion);
+        target.hp = Math.min(target.hp + potion.heal, target.maxHp);
+        createParticleEffect(target.mesh.position, 0x00ff00);
+        broadcastToChat(`💚 ${healerName} heals ${targetName} for ${potion.heal} HP!`);
+        updateLabel(target);
+    }
+
+    function handleExplore(username) {
+        const player = entities.find(e => e.name === username && !e.ghost);
+        if (!player) return;
+        
+        if (player.actionPoints < 2) {
+            broadcastToChat(`⚠️ ${username} needs 2 action points to explore!`);
+            return;
+        }
+        
+        player.actionPoints -= 2;
+        
+        const exploreRng = mulberry32(currentSeed + tick + hashString(username));
+        const roll = exploreRng();
+        
+        if (roll < 0.3) {
+            const loot = deterministicLootDrop(exploreRng);
+            player.inventory.push(loot);
+            broadcastToChat(`🗺️ ${username} explores and finds ${loot.emoji} ${loot.name}!`);
+            createParticleEffect(player.mesh.position, 0xffd700);
+        } else if (roll < 0.5) {
+            broadcastToChat(`⚠️ ${username} was ambushed while exploring!`);
+            spawnFoeNear(player.mesh.position, exploreRng);
+        } else {
+            const gold = Math.floor(exploreRng() * 15) + 5;
+            player.stats.gold += gold;
+            broadcastToChat(`💰 ${username} found ${gold} gold while exploring!`);
+        }
+        
+        updateLabel(player);
+    }
+
+    function handleEquip(username, itemName) {
+        const player = entities.find(e => e.name === username && !e.ghost);
+        if (!player) return;
+        
+        const item = player.inventory.find(i => i.name.toLowerCase().includes(itemName.toLowerCase()));
+        if (!item) {
+            broadcastToChat(`❌ ${username} doesn't have that item!`);
+            return;
+        }
+        
+        if (item.type === 'consumable') {
+            broadcastToChat(`❌ Can't equip consumables! Use /heal instead.`);
+            return;
+        }
+        
+        if (player.equipment[item.type]) {
+            player.inventory.push(player.equipment[item.type]);
+        }
+        
+        player.equipment[item.type] = item;
+        player.inventory = player.inventory.filter(i => i !== item);
+        
+        if (item.type === 'weapon') player.stats.attack += item.attack;
+        if (item.type === 'armor') player.stats.defense += item.defense;
+        if (item.type === 'accessory' && item.speedBoost) {
+            player.vx *= (1 + item.speedBoost);
+            player.vz *= (1 + item.speedBoost);
+        }
+        
+        broadcastToChat(`⚡ ${username} equipped ${item.emoji} ${item.name}!`);
+        updateLabel(player);
+    }
+
+    function handleInventory(username) {
+        const player = entities.find(e => e.name === username);
+        if (!player) return;
+        
+        let inv = `📋 ${username}'s Inventory:\n`;
+        inv += `💰 Gold: ${player.stats.gold} | ⭐ XP: ${player.stats.xp} | Lvl: ${player.stats.level}\n`;
+        
+        if (player.equipment.weapon) inv += `⚔️ Weapon: ${player.equipment.weapon.name}\n`;
+        if (player.equipment.armor) inv += `🛡️ Armor: ${player.equipment.armor.name}\n`;
+        if (player.equipment.accessory) inv += `👢 Accessory: ${player.equipment.accessory.name}\n`;
+        
+        if (player.inventory.length > 0) {
+            inv += `\nItems: `;
+            inv += player.inventory.map(i => `${i.emoji}${i.name}`).join(', ');
+        } else {
+            inv += `\nNo items in inventory.`;
+        }
+        
+        broadcastToChat(inv);
+    }
+
+    /* ---------------- Loot System ---------------- */
+
+    function deterministicLootDrop(rng) {
+        const totalWeight = LOOT_TABLE.reduce((sum, item) => sum + item.rarity, 0);
+        let roll = rng() * totalWeight;
+        
+        for (const item of LOOT_TABLE) {
+            roll -= item.rarity;
+            if (roll <= 0) {
+                return { ...item, id: Date.now() + Math.random() };
+            }
+        }
+        return { ...LOOT_TABLE[0], id: Date.now() + Math.random() };
+    }
+
+    /* ---------------- Level Up ---------------- */
+
+    function checkLevelUp(player) {
+        const xpNeeded = player.stats.level * 50;
+        if (player.stats.xp >= xpNeeded) {
+            player.stats.level++;
+            player.stats.xp -= xpNeeded;
+            player.maxHp++;
+            player.hp = player.maxHp;
+            player.stats.attack++;
+            broadcastToChat(`🎊 LEVEL UP! ${player.name} is now level ${player.stats.level}!`);
+            createParticleEffect(player.mesh.position, 0xffff00, 30);
+            updateLabel(player);
+        }
+    }
+
+    /* ---------------- World Events ---------------- */
+
+    function checkWorldEvents() {
+        const gameTime = Math.floor((tick / TICK_DIVISOR));
+        const event = WORLD_EVENTS.find(e => e.tick === gameTime);
+        
+        if (event) {
+            broadcastToChat(`[🌍 WORLD EVENT] ${event.description}`);
+            handleWorldEvent(event.event);
+        }
+    }
+
+    function handleWorldEvent(eventType) {
+        const rng = mulberry32(currentSeed + tick);
+        
+        switch(eventType) {
+            case 'boss_spawn':
+                spawnBoss(rng);
+                break;
+            case 'treasure_rain':
+                for (let i = 0; i < 5; i++) {
+                    spawnTreasure(rng);
+                }
+                break;
+            case 'fog_descends':
+                scene.fog = new THREE.Fog(0x666666, 10, 50);
+                setTimeout(() => { scene.fog = null; }, 30000);
+                break;
+            case 'heal_fountain':
+                entities.forEach(e => {
+                    if (e.type === 'tank' && !e.ghost) {
+                        e.hp = e.maxHp;
+                        createParticleEffect(e.mesh.position, 0x00ffff);
+                    }
+                });
+                break;
+            case 'speed_boost':
+                entities.forEach(e => {
+                    if (e.type === 'tank' && !e.ghost) {
+                        e.buffs.push({ type: 'speed', duration: 50 });
+                        e.vx *= 1.5;
+                        e.vz *= 1.5;
+                    }
+                });
+                break;
+        }
+    }
+
+    function spawnBoss(rng) {
+        const x = Math.round((rng() - 0.5) * 60);
+        const z = Math.round((rng() - 0.5) * 60);
+        
+        const boss = createEntity(
+            'boss',
+            materials.foe,
+            x,
+            z,
+            rng,
+            'DEMON LORD',
+            '#ff0000',
+            5
+        );
+        
+        entities.push(boss);
+        createParticleEffect(boss.mesh.position, 0xff0000, 50);
+    }
+
+    function spawnTreasure(rng) {
+        const x = Math.round((rng() - 0.5) * 80);
+        const z = Math.round((rng() - 0.5) * 80);
+        
+        const treasure = createEntity(
+            'treasure',
+            materials.food,
+            x,
+            z,
+            rng
+        );
+        
+        treasure.loot = deterministicLootDrop(rng);
+        entities.push(treasure);
+    }
+
+    function spawnFoeNear(position, rng) {
+        const offset = 5;
+        const x = position.x + (rng() - 0.5) * offset;
+        const z = position.z + (rng() - 0.5) * offset;
+        
+        const foe = createEntity(
+            'foe',
+            materials.foe,
+            x,
+            z,
+            rng
+        );
+        
+        entities.push(foe);
+        foeCounter++;
+    }
+
+    /* ---------------- Ghost Controls ---------------- */
+
+    function moveGhost(username, direction) {
+        const ghost = entities.find(e => e.ghost && e.name === username);
+        if (!ghost) return;
+
+        switch(direction.toUpperCase()) {
+            case 'T':
+                ghost.mesh.position.z -= GHOST_SPEED;
+                break;
+            case 'V':
+                ghost.mesh.position.z += GHOST_SPEED;
+                break;
+            case 'F':
+                ghost.mesh.position.x -= GHOST_SPEED;
+                break;
+            case 'G':
+                ghost.mesh.position.x += GHOST_SPEED;
+                break;
+        }
+
+        ghost.mesh.position.x = Math.max(WORLD_MIN, Math.min(WORLD_MAX, ghost.mesh.position.x));
+        ghost.mesh.position.z = Math.max(WORLD_MIN, Math.min(WORLD_MAX, ghost.mesh.position.z));
+    }
+
+    function getLocalPlayer() {
+        const profileLink = document.querySelector('#welcome a[href^="/account/profile"]');
+        if (profileLink) {
+            localPlayerName = profileLink.textContent.trim();
+            return localPlayerName;
+        }
+        
+        const usernameSpan = document.querySelector('#welcome span');
+        if (usernameSpan) {
+            const text = usernameSpan.textContent;
+            const match = text.match(/Welcome,\s*(.+?)(?:\s|$)/);
+            if (match) {
+                localPlayerName = match[1].trim();
+                return localPlayerName;
+            }
+        }
+        
+        return null;
+    }
+
+    function spawnFoe() {
+        const rng = mulberry32(currentSeed + 5000 + foeCounter);
+        foeCounter++;
+
+        const x = Math.round((rng() - 0.5) * 80);
+        const z = Math.round((rng() - 0.5) * 80);
+
+        const newFoe = createEntity(
+            'foe',
+            materials.foe,
+            x,
+            z,
+            rng
+        );
+
+        entities.push(newFoe);
+        broadcastToChat(`👻 A ghost summoned an enemy!`);
+    }
+
+    function checkAllGhost() {
+        const tanks = entities.filter(e => e.type === 'tank' || e.ghost);
+        const allGhost = tanks.length > 0 && tanks.every(e => e.ghost);
+        
+        if (allGhost && terrain.material.map.image.src !== 'https://i.ibb.co/8LnMxGny/Grave-Yard.webp') {
+            const loader = new THREE.TextureLoader();
+            terrain.material.map = loader.load('https://i.ibb.co/8LnMxGny/Grave-Yard.webp');
+            terrain.material.needsUpdate = true;
+            broadcastToChat('💀 All players have fallen... The graveyard claims the battlefield.');
+        }
+    }
+
+    /* ---------------- Materials ---------------- */
+
+    function loadMaterials() {
+        const loader = new THREE.TextureLoader();
+        
+        materials.tank = new THREE.MeshBasicMaterial({ 
+            map: loader.load('https://i.ibb.co/WQ9Py5J/Apu-Radio-Its-Over.webp') 
+        });
+        materials.ghost = new THREE.MeshBasicMaterial({ 
+            map: loader.load('https://i.ibb.co/CKMC9K3v/ghost-user.gif'),
+            transparent: true,
+            opacity: 0.6
+        });
+        materials.foe = new THREE.MeshBasicMaterial({ 
+            map: loader.load('https://i.ibb.co/MkG52QDN/Blogus-Foe.webp') 
+        });
+        materials.food = new THREE.MeshBasicMaterial({ 
+            map: loader.load('https://i.ibb.co/chvzwJhg/Food-Burger.webp') 
+        });
+    }
+
+    /* ---------------- Chat Broadcast ---------------- */
+    
+    function broadcastToChat(message) {
+        console.log('[BattleTanks]', message);
+    }
+
+    /* ---------------- Game Setup ---------------- */
+
+    async function startGame(seedWord) {
+        for (const e of entities) {
+            scene.remove(e.mesh);
+        }
+        entities = [];
+        foeCounter = 0;
+        gameStarted = true;
+
+        const room = location.pathname.split('/').pop();
+        const baseSeed = await shaSeed(room + ':' + seedWord);
+        currentSeed = baseSeed;
+
+        const names = [...document.querySelectorAll('#userlist .userlist_item span:nth-child(2)')]
+            .map(n => n.textContent.trim())
+            .filter(Boolean)
+            .sort();
+
+        broadcastToChat(`🎮 Starting BattleTanks MUD with ${names.length} players! Seed: ${seedWord}`);
+
+        names.forEach((name, i) => {
+            const rng = mulberry32(baseSeed + i);
+            const color = getPlayerColor(name, baseSeed);
+            entities.push(createEntity(
+                'tank',
+                materials.tank,
+                Math.round((rng() - 0.5) * 80),
+                Math.round((rng() - 0.5) * 80),
+                rng,
+                name,
+                color
+            ));
+        });
+
+        for (let i = 0; i < 6; i++) {
+            const rng = mulberry32(baseSeed + 1000 + i);
+            entities.push(createEntity(
+                'foe',
+                materials.foe,
+                Math.round((rng() - 0.5) * 80),
+                Math.round((rng() - 0.5) * 80),
+                rng
+            ));
+        }
+
+        for (let i = 0; i < 8; i++) {
+            const rng = mulberry32(baseSeed + 2000 + i);
+            entities.push(createEntity(
+                'food',
+                materials.food,
+                Math.round((rng() - 0.5) * 80),
+                Math.round((rng() - 0.5) * 80),
+                rng
+            ));
+        }
+
+        const loader = new THREE.TextureLoader();
+        terrain.material.map = loader.load('https://i.ibb.co/LBGxqDV/terrian-level-001.gif');
+        terrain.material.needsUpdate = true;
+        
+        broadcastToChat(`📜 Type /help to see all commands!`);
+    }
+
+    /* ---------------- Update Label ---------------- */
+
+    function updateLabel(entity) {
+        if (!entity.label || !entity.name) return;
+        
+        const hpText = entity.ghost ? 'GHOST' : `HP: ${entity.hp}/${entity.maxHp}`;
+        const apText = entity.ghost ? '' : ` | AP: ${entity.actionPoints}`;
+        const color = entity.labelColor || '#ffffff';
+        
+        const canvas = document.createElement('canvas');
+        canvas.width = 256;
+        canvas.height = 96;
+        const ctx = canvas.getContext('2d');
+
+        ctx.font = 'bold 26px monospace';
+        ctx.fillStyle = color;
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 4;
+        ctx.textAlign = 'center';
+        
+        ctx.strokeText(entity.name, 128, 28);
+        ctx.fillText(entity.name, 128, 28);
+        
+        ctx.font = 'bold 20px monospace';
+        const subtitle = hpText + apText;
+        ctx.strokeText(subtitle, 128, 60);
+        ctx.fillText(subtitle, 128, 60);
+
+        entity.label.material.map.dispose();
+        entity.label.material.map = new THREE.CanvasTexture(canvas);
+        entity.label.material.needsUpdate = true;
+    }
+
+    /* ---------------- Game Loop ---------------- */
+
+    function animate() {
+        requestAnimationFrame(animate);
+        tick++;
+
+        if (tick % TICK_DIVISOR !== 0) {
+            renderer.render(scene, camera);
+            return;
+        }
+
+        if (gameStarted) {
+            checkWorldEvents();
+            
+            // Refresh action points every ~5 seconds
+            if (tick % ACTION_REFRESH_TICKS === 0) {
+                for (const entity of entities) {
+                    if (entity.type === 'tank' && !entity.ghost) {
+                        entity.actionPoints = Math.min(entity.actionPoints + 1, 3);
+                        entity.defending = false;
+                        updateLabel(entity);
+                    }
+                }
+            }
+        }
+
+        for (const e of entities) {
+            if (e.ghost) continue;
+
+            e.mesh.position.x += e.vx;
+            e.mesh.position.z += e.vz;
+
+            if (e.mesh.position.x < WORLD_MIN || e.mesh.position.x > WORLD_MAX) {
+                e.vx *= -1;
+                e.mesh.position.x = Math.max(WORLD_MIN, Math.min(WORLD_MAX, e.mesh.position.x));
+            }
+            if (e.mesh.position.z < WORLD_MIN || e.mesh.position.z > WORLD_MAX) {
+                e.vz *= -1;
+                e.mesh.position.z = Math.max(WORLD_MIN, Math.min(WORLD_MAX, e.mesh.position.z));
+            }
+
+            e.mesh.rotation.y += 0.02;
+        }
+
+        for (let i = 0; i < entities.length; i++) {
+            for (let j = i + 1; j < entities.length; j++) {
+                const a = entities[i];
+                const b = entities[j];
+                
+                if (a.ghost || b.ghost) continue;
+                if (!collide(a, b)) continue;
+
+                bounce(a, b);
+
+                // Tank picks up treasure
+                if ((a.type === 'tank' && b.type === 'treasure') || (b.type === 'tank' && a.type === 'treasure')) {
+                    const tank = a.type === 'tank' ? a : b;
+                    const treasure = a.type === 'treasure' ? a : b;
+                    
+                    tank.inventory.push(treasure.loot);
+                    broadcastToChat(`💎 ${tank.name} found ${treasure.loot.emoji} ${treasure.loot.name}!`);
+                    treasure.hp = 0;
+                    continue;
+                }
+
+                if (a.type === 'tank' && b.type === 'tank') {
+                    a.hp--;
+                    b.hp--;
+                } else if (a.type === 'tank' && (b.type === 'foe' || b.type === 'boss')) {
+                    a.hp--;
+                    b.hp = 0;
+                } else if (b.type === 'tank' && (a.type === 'foe' || a.type === 'boss')) {
+                    b.hp--;
+                    a.hp = 0;
+                } else if (a.type === 'tank' && b.type === 'food') {
+                    a.hp = Math.min(a.hp + 1, a.maxHp);
+                    b.hp = 0;
+                } else if (b.type === 'tank' && a.type === 'food') {
+                    b.hp = Math.min(b.hp + 1, b.maxHp);
+                    a.hp = 0;
+                }
+            }
+        }
+
+        for (let i = entities.length - 1; i >= 0; i--) {
+            const e = entities[i];
+
+            if (e.type === 'tank' && e.hp <= 0 && !e.ghost) {
+                e.type = 'ghost';
+                e.ghost = true;
+                e.vx = 0;
+                e.vz = 0;
+                e.mesh.material = materials.ghost;
+                broadcastToChat(`💀 ${e.name} has fallen and become a ghost!`);
+                updateLabel(e);
+                checkAllGhost();
+                continue;
+            }
+
+            if (e.type === 'tank') {
+                updateLabel(e);
+            }
+
+            if (!e.ghost && e.type !== 'tank' && e.hp <= 0) {
+                scene.remove(e.mesh);
+                entities.splice(i, 1);
+            }
+        }
+
+        renderer.render(scene, camera);
+    }
+
+    /* ---------------- Resize Handler ---------------- */
+
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    /* ---------------- Init ---------------- */
+
+    async function init() {
+        await loadThree();
+
+        if (!window.THREE) {
+            console.error('[BattleTanks] Three.js failed to load');
+            return;
+        }
+
+        const canvas = document.createElement('canvas');
+        Object.assign(canvas.style, {
+            position: 'fixed',
+            inset: 0,
+            zIndex: -1,
+            pointerEvents: 'none'
+        });
+        document.body.appendChild(canvas);
+
+        renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+
+        scene = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 500);
+        camera.position.set(0, 35, 45);
+        camera.lookAt(0, 0, 0);
+
+        scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+        scene.add(new THREE.DirectionalLight(0xffffff, 0.5));
+
+        terrain = new THREE.Mesh(
+            new THREE.PlaneGeometry(100, 100),
+            new THREE.MeshBasicMaterial({
+                map: new THREE.TextureLoader().load('https://i.ibb.co/LBGxqDV/terrian-level-001.gif')
+            })
+        );
+        terrain.rotation.x = -Math.PI / 2;
+        scene.add(terrain);
+
+        loadMaterials();
+        getLocalPlayer();
+
+        window.addEventListener('resize', onWindowResize);
+
+        animate();
+
+        if (window.socket && window.socket.on) {
+            window.socket.on('chatMsg', data => {
+                const msg = data?.msg;
+                const username = data?.username;
+                
+                if (!msg || !username) return;
+
+                // /startgame
+                const startMatch = msg.match(/^\/startgame\s+(.+)/i);
+                if (startMatch) {
+                    startGame(startMatch[1]);
+                    return;
+                }
+
+                // /attack
+                const attackMatch = msg.match(/^\/attack\s+(.+)/i);
+                if (attackMatch) {
+                    handleAttack(username, attackMatch[1]);
+                    return;
+                }
+
+                // /defend
+                if (msg.match(/^\/defend/i)) {
+                    handleDefend(username);
+                    return;
+                }
+
+                // /heal
+                const healMatch = msg.match(/^\/heal\s+(.+)/i);
+                if (healMatch) {
+                    handleHeal(username, healMatch[1]);
+                    return;
+                }
+
+                // /explore
+                if (msg.match(/^\/explore/i)) {
+                    handleExplore(username);
+                    return;
+                }
+
+                // /equip
+                const equipMatch = msg.match(/^\/equip\s+(.+)/i);
+                if (equipMatch) {
+                    handleEquip(username, equipMatch[1]);
+                    return;
+                }
+
+                // /inventory or /inv
+                if (msg.match(/^\/inv(entory)?/i)) {
+                    handleInventory(username);
+                    return;
+                }
+
+                // /help
+                if (msg.match(/^\/help/i)) {
+                    const help = `
+🎮 BATTLETANKS MUD - COMMAND LIST 🎮
+
+COMBAT:
+/attack <target> - Attack enemy or player (1 AP)
+/defend - Take defensive stance (+2 def) (1 AP)
+
+EXPLORATION:
+/explore - Search for loot or enemies (2 AP)
+
+ITEMS:
+/equip <item> - Equip weapon/armor/accessory
+/heal <player> - Use healing potion on target
+/inventory or /inv - View your stats & items
+
+ADMIN:
+/startgame <seed> - Start new game with seed word
+
+GHOST CONTROLS (when dead):
+T - Move North
+V - Move South
+F - Move West
+G - Move East
+SPAWNFOE - Summon enemy (ghosts only)
+
+💡 Action Points (AP) regenerate over time!
+                    `.trim();
+                    broadcastToChat(help);
+                    return;
+                }
+
+                // SPAWNFOE
+                if (msg === 'SPAWNFOE') {
+                    const senderGhost = entities.find(e => e.ghost && e.name === username);
+                    if (senderGhost) {
+                        spawnFoe();
+                    }
+                    return;
+                }
+
+                // Ghost movement
+                if (/^[TFGV]$/.test(msg) && username) {
+                    moveGhost(username, msg);
+                    return;
+                }
+            });
+        } else {
+            console.warn('[BattleTanks] Socket not found');
+        }
+
+        console.log('[BattleTanks MUD] Loaded successfully!');
+        console.log('Type /startgame <seed> to begin!');
+        console.log('Type /help for all commands');
+    }
+
+    init();
+})();
